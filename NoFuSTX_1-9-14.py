@@ -21,8 +21,17 @@ import time
 # --- 2. Grafische Benutzeroberfläche & Karten (GUI) ---
 import tkinter as tk
 from tkinter import ttk, messagebox
-import tkintermapview   # Die Karten-Engine
-from PIL import Image, ImageTk  # Bildverarbeitung für Icons und Karten
+
+try:
+    import tkintermapview   # Die Karten-Engine
+except ImportError:
+    tkintermapview = None
+
+try:
+    from PIL import Image, ImageTk  # Bildverarbeitung für Icons und Karten
+except ImportError:
+    Image = None
+    ImageTk = None
 
 # --- 3. Funk- & Modem-Schnittstellen (Externe Module) ---
 # Hinweis: Diese müssen über den check_dependencies() geprüft werden
@@ -59,9 +68,51 @@ except ImportError:
     pysstv = None
 
 # --- 4. Netzwerk & Internet ---
-import requests         # API-Abfragen für Wetter, Gateways oder Online-Logs
-
+try:
+    import requests         # API-Abfragen für Wetter, Gateways oder Online-Logs
+except ImportError:
+    requests = None
 # =============================================================================
+
+def check_dependencies():
+    missing = []
+
+    # GUI / Karten
+    if tkintermapview is None:
+        missing.append("tkintermapview")
+    if Image is None or ImageTk is None:
+        missing.append("Pillow")
+
+    # optionale Funkmodule
+    if aprslib is None:
+        missing.append("aprslib")
+    if pyjs8call is None:
+        missing.append("pyjs8call")
+    if pyfldigi is None:
+        missing.append("pyfldigi")
+    if serial is None:
+        missing.append("pyserial")
+    if pyaudio is None or np is None:
+        missing.append("pyaudio + numpy")
+    if pysstv is None:
+        missing.append("pysstv")
+    if requests is None:
+        missing.append("requests")
+
+    if missing:
+        msg = (
+            "Einige optionale Abhängigkeiten fehlen:\n\n"
+            + "\n".join(f"• {m}" for m in missing)
+            + "\n\nInstallieren mit:\n"
+            + "  python -m pip install " + " ".join(
+                m.replace(" + ", " ").split()[0] for m in missing
+              )
+            + "\n\n(Die App kann auch ohne diese Pakete starten, aber bestimmte Funktionen sind dann deaktiviert.)"
+        )
+        try:
+            messagebox.showwarning("NoFuSTX: fehlende Abhängigkeiten", msg)
+        except Exception:
+            print(msg)
 
 
 
@@ -145,6 +196,7 @@ class NoFuSTX:
         }
 
         self.load_settings()
+        check_dependencies()
         self.setup_ui()
         self.init_session_log()
         self.init_aprs_system()
