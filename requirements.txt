@@ -1,0 +1,10 @@
+requests
+tkintermapview
+pillow
+aprslib
+pyjs8call
+pyfldigi
+pyserial
+numpy
+pyaudio
+pysstv
