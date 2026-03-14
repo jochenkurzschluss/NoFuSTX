@@ -72,6 +72,23 @@ try:
     import requests         # API-Abfragen für Wetter, Gateways oder Online-Logs
 except ImportError:
     requests = None
+# --- 3. Funk- & Modem-Schnittstellen (Externe Module) ---
+# Hinweis: Diese müssen über den check_dependencies() geprüft werden
+try:
+    import pyjs8call  # API-Schnittstelle zu JS8Call
+except ImportError:
+    pyjs8call = None
+
+try:
+    import pyvara  # Für VARA-Modem
+except ImportError:
+    pyvara = None
+
+# MT63 ist bereits über pyfldigi abgedeckt (falls du das so willst), oder füge eine separate Lib hinzu:
+# try:
+#     import pymt63  # Falls eine spezifische MT63-Bibliothek existiert
+# except ImportError:
+#     pymt63 = None
 # =============================================================================
 
 def check_dependencies():
@@ -98,19 +115,34 @@ def check_dependencies():
         missing.append("pysstv")
     if requests is None:
         missing.append("requests")
+    if pyvara is None:
+        missing.append("pyvara")
+    # if pymt63 is None:  # Falls du MT63 separat prüfst
+    #     missing.append("pymt63")
+
+    # ... (Rest der Funktion bleibt gleich)
 
     if missing:
+        install_cmd = "python -m pip install " + " ".join(
+            m.replace(" + ", " ").split()[0] for m in missing
+        )
         msg = (
             "Einige optionale Abhängigkeiten fehlen:\n\n"
             + "\n".join(f"• {m}" for m in missing)
-            + "\n\nInstallieren mit:\n"
-            + "  python -m pip install " + " ".join(
-                m.replace(" + ", " ").split()[0] for m in missing
-              )
+            + "\n\nInstallieren mit:\n\n"
+            + install_cmd
             + "\n\n(Die App kann auch ohne diese Pakete starten, aber bestimmte Funktionen sind dann deaktiviert.)"
         )
         try:
-            messagebox.showwarning("NoFuSTX: fehlende Abhängigkeiten", msg)
+            # Anstatt Messagebox ein kopierbares Textfeld öffnen
+            win = tk.Toplevel()
+            win.title("NoFuSTX: fehlende Abhängigkeiten")
+            win.geometry("500x300")
+            text = tk.Text(win, wrap="word")
+            text.insert("1.0", msg)
+            text.pack(expand=True, fill="both")
+            button = tk.Button(win, text="Schließen", command=win.destroy)
+            button.pack()
         except Exception:
             print(msg)
 
@@ -180,6 +212,24 @@ class NoFuSTX:
                     "soundcard": "System Standard",
                 },
                 "FAX": {"active": False, "lpm": "120", "ioc": "576"},
+                "JS8CALL": {
+                    "active": False,
+                    "frequency": "7.078 MHz",  # Typische JS8Call-Frequenz
+                    "callsign": "NOCALL",
+                    "soundcard": "System",
+                },
+                "VARA": {
+                    "active": False,
+                    "frequency": "14.105 MHz",  # Typische VARA-Frequenz
+                    "callsign": "NOCALL",
+                    "soundcard": "System",
+                },
+                "MT63": {
+                    "active": False,
+                    "frequency": "7.040 MHz",  # Typische MT63-Frequenz
+                    "bandwidth": "1k",  # z. B. 500Hz, 1k, 2k
+                    "soundcard": "System",
+                },
             },
             "PRINTER": {"name": "Standard-Thermo", "auto_print": False},
             "UNITS": [
@@ -213,6 +263,11 @@ class NoFuSTX:
                 # Fehlende Bereiche aus Default ergänzen
                 if "MODES" not in self.config:
                     self.config["MODES"] = self.default_config["MODES"]
+                else:
+                    # Fehlende Modi hinzufügen
+                    for mode, params in self.default_config["MODES"].items():
+                        if mode not in self.config["MODES"]:
+                            self.config["MODES"][mode] = params
                 if "PRINTER" not in self.config:
                     self.config["PRINTER"] = self.default_config["PRINTER"]
                 if "MAP" not in self.config:
@@ -1029,6 +1084,9 @@ class NoFuSTX:
 
     def setup_map_view(self):
         # Karte mit APRS-Integration
+        if tkintermapview is None:
+            tk.Label(self.tab_map, text="Karte nicht verfügbar (tkintermapview nicht installiert)").pack(expand=1)
+            return
         self.map_widget = tkintermapview.TkinterMapView(self.tab_map)
         self.map_widget.pack(expand=1, fill="both")
 
@@ -1188,8 +1246,8 @@ class NoFuSTX:
 
         modes = ["Nur Log"]
         for mode, data in self.config["MODES"].items():
-            # Nur typische Übertragungsmodi für Text anbieten
-            if mode in ("RTTY", "WINLINK") and data.get("active"):
+            # Alle aktiven Modi für Text-Übertragung anbieten
+            if mode in ("RTTY", "WINLINK", "JS8CALL", "VARA", "MT63") and data.get("active"):
                 modes.append(mode)
 
         self.send_mode_var = tk.StringVar(value=modes[0])
@@ -1244,6 +1302,92 @@ class NoFuSTX:
 
         nb = ttk.Notebook(win)
         nb.pack(expand=1, fill="both", padx=5, pady=5)
+
+        self.temp_entries = {}  # Initialisiere temp_entries
+
+        # JS8Call
+        js8_f = ttk.Frame(nb)
+        nb.add(js8_f, text="JS8Call")
+        params = self.config["MODES"]["JS8CALL"]
+        self.temp_entries["JS8CALL"] = {}
+
+        v = tk.BooleanVar(value=params.get("active", False))
+        tk.Checkbutton(js8_f, text="JS8Call Aktiv", variable=v).pack(pady=10)
+        self.temp_entries["JS8CALL"]["active"] = v
+
+        tk.Label(js8_f, text="FREQUENCY:").pack()
+        freq_ent = ttk.Entry(js8_f)
+        freq_ent.insert(0, str(params.get("frequency", "7.078 MHz")))
+        freq_ent.pack(pady=2)
+        self.temp_entries["JS8CALL"]["frequency"] = freq_ent
+
+        tk.Label(js8_f, text="CALLSIGN:").pack()
+        call_ent = ttk.Entry(js8_f)
+        call_ent.insert(0, str(params.get("callsign", "NOCALL")))
+        call_ent.pack(pady=2)
+        self.temp_entries["JS8CALL"]["callsign"] = call_ent
+
+        tk.Label(js8_f, text="SOUNDCARD:").pack()
+        sc_cb = ttk.Combobox(js8_f, values=["System", "USB Codec", "Virtual"])
+        sc_cb.set(params.get("soundcard", "System"))
+        sc_cb.pack(pady=2)
+        self.temp_entries["JS8CALL"]["soundcard"] = sc_cb
+
+        # VARA (ähnlich)
+        vara_f = ttk.Frame(nb)
+        nb.add(vara_f, text="VARA")
+        params = self.config["MODES"]["VARA"]
+        self.temp_entries["VARA"] = {}
+
+        v = tk.BooleanVar(value=params.get("active", False))
+        tk.Checkbutton(vara_f, text="VARA Aktiv", variable=v).pack(pady=10)
+        self.temp_entries["VARA"]["active"] = v
+
+        tk.Label(vara_f, text="FREQUENCY:").pack()
+        freq_ent = ttk.Entry(vara_f)
+        freq_ent.insert(0, str(params.get("frequency", "14.105 MHz")))
+        freq_ent.pack(pady=2)
+        self.temp_entries["VARA"]["frequency"] = freq_ent
+
+        tk.Label(vara_f, text="CALLSIGN:").pack()
+        call_ent = ttk.Entry(vara_f)
+        call_ent.insert(0, str(params.get("callsign", "NOCALL")))
+        call_ent.pack(pady=2)
+        self.temp_entries["VARA"]["callsign"] = call_ent
+
+        tk.Label(vara_f, text="SOUNDCARD:").pack()
+        sc_cb = ttk.Combobox(vara_f, values=["System", "USB Codec", "Virtual"])
+        sc_cb.set(params.get("soundcard", "System"))
+        sc_cb.pack(pady=2)
+        self.temp_entries["VARA"]["soundcard"] = sc_cb
+
+        # MT63 (ähnlich, mit bandwidth)
+        mt63_f = ttk.Frame(nb)
+        nb.add(mt63_f, text="MT63")
+        params = self.config["MODES"]["MT63"]
+        self.temp_entries["MT63"] = {}
+
+        v = tk.BooleanVar(value=params.get("active", False))
+        tk.Checkbutton(mt63_f, text="MT63 Aktiv", variable=v).pack(pady=10)
+        self.temp_entries["MT63"]["active"] = v
+
+        tk.Label(mt63_f, text="FREQUENCY:").pack()
+        freq_ent = ttk.Entry(mt63_f)
+        freq_ent.insert(0, str(params.get("frequency", "7.040 MHz")))
+        freq_ent.pack(pady=2)
+        self.temp_entries["MT63"]["frequency"] = freq_ent
+
+        tk.Label(mt63_f, text="BANDWIDTH:").pack()
+        bw_cb = ttk.Combobox(mt63_f, values=["500Hz", "1k", "2k"])
+        bw_cb.set(params.get("bandwidth", "1k"))
+        bw_cb.pack(pady=2)
+        self.temp_entries["MT63"]["bandwidth"] = bw_cb
+
+        tk.Label(mt63_f, text="SOUNDCARD:").pack()
+        sc_cb = ttk.Combobox(mt63_f, values=["System", "USB Codec", "Virtual"])
+        sc_cb.set(params.get("soundcard", "System"))
+        sc_cb.pack(pady=2)
+        self.temp_entries["MT63"]["soundcard"] = sc_cb
 
         # AX.25 Ports
         ax_f = ttk.Frame(nb)
@@ -1303,15 +1447,16 @@ class NoFuSTX:
         )
         tk.Checkbutton(pr_f, text="Auto-Print", variable=self.prn_auto).pack(pady=10)
 
-        # Weitere Modi (inkl. SSTV-Spezialfall)
-        self.temp_entries = {}
+        # Weitere Modi (inkl. SSTV-Spezialfall), aber nur für Modi ohne eigene Tabs
         for mode, params in self.config["MODES"].items():
-            if mode == "AX25_PORTS":
+            if mode in ("AX25_PORTS", "JS8CALL", "VARA", "MT63"):  # Diese haben eigene Tabs
                 continue
 
             f = ttk.Frame(nb)
             nb.add(f, text=mode)
-            self.temp_entries[mode] = {}
+            # self.temp_entries[mode] wird bereits oben gesetzt, also nicht neu initialisieren
+            if mode not in self.temp_entries:
+                self.temp_entries[mode] = {}
 
             v = tk.BooleanVar(value=params.get("active", False))
             tk.Checkbutton(f, text=f"{mode} Aktiv", variable=v).pack(pady=10)
@@ -1421,14 +1566,11 @@ class NoFuSTX:
 
         # Weitere Modi als einfache Terminals
         for mode, data in self.config["MODES"].items():
-            if mode != "AX25_PORTS" and data.get("active"):
+            if mode not in ("AX25_PORTS", "APRS_IS") and data.get("active"):
                 f = ttk.Frame(nb)
                 nb.add(f, text=mode)
-                t = tk.Text(
-                    f, bg="black", fg="lightgreen", font=("Courier", 10)
-                )
+                t = tk.Text(f, bg="#001100", fg="#00FF00", font=("Courier", 11))
                 t.pack(expand=1, fill="both")
-                # Modus-Namen als Schlüssel (z.B. "RTTY", "WINLINK")
                 self.digi_terminals[mode] = t
 
     # ---------- LOG ----------
