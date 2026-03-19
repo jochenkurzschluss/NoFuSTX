@@ -46,16 +46,17 @@ venv\Scripts\activate       # Windows
 
 Option A: requirements.txt (wenn du erstellst)
 
-        requests
         tkintermapview
-        pillow
+        Pillow
         aprslib
         pyjs8call
         pyfldigi
         pyserial
-        numpy
         pyaudio
+        numpy
         pysstv
+        requests
+        pyvara
 
 python -m pip install -r requirements.txt
 
