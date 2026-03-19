@@ -1,10 +1,11 @@
-requests
 tkintermapview
-pillow
+Pillow
 aprslib
 pyjs8call
 pyfldigi
 pyserial
-numpy
 pyaudio
+numpy
 pysstv
+requests
+pyvara
