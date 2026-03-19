@@ -24,6 +24,18 @@
 # --- 1. Python Standard-Bibliotheken (Immer vorhanden) ---
 import sys
 import os
+# --- NEU: Offline-Logik ---
+# Ermittle den Pfad, wo dieses Script liegt
+base_path = os.path.dirname(os.path.abspath(__file__))
+libs_path = os.path.join(base_path, 'libs')
+
+if os.path.exists(libs_path):
+    # Wir schieben unseren libs-Ordner an Position 0 der Suchliste
+    sys.path.insert(0, libs_path)
+    # Debug-Ausgabe in der Konsole
+    print(f"[*] NoFuSTX Portable-Modus: Nutze lokale Libs aus {libs_path}")
+# -------------------------------
+
 import datetime
 import json
 import subprocess
@@ -1110,14 +1122,34 @@ class NoFuSTX:
         help_m.add_command(label="Über NoFuSTX", command=self.show_about_window)
 
     def setup_map_view(self):
-        # Karte mit APRS-Integration
+        """Initialisiert die Kartenansicht mit Offline-Cache-Support."""
         if tkintermapview is None:
-            tk.Label(self.tab_map, text="Karte nicht verfügbar (tkintermapview nicht installiert)").pack(expand=1)
+            tk.Label(self.tab_map, text="Karte nicht verfügbar (tkintermapview fehlt)").pack(expand=1)
             return
-        self.map_widget = tkintermapview.TkinterMapView(self.tab_map)
+
+        # 1. Pfade für die USB-Version (Relativ zum Skript)
+        map_folder = os.path.join(base_path, "off_Maps")
+        if not os.path.exists(map_folder):
+            try:
+                os.makedirs(map_folder)
+            except:
+                pass
+        
+        db_path = os.path.join(map_folder, "offline_tiles.db")
+
+        # 2. Widget erstellen
+        self.map_widget = tkintermapview.TkinterMapView(self.tab_map, corner_radius=0)
         self.map_widget.pack(expand=1, fill="both")
 
-        # Startposition aus Config (MAP) – Standard ca. 10 km Radius um 51.9621817 / 9.6509120
+        # 3. Datenbank aktivieren (set_database_path ist in v1.29+ Standard)
+        if hasattr(self.map_widget, "set_database_path"):
+            try:
+                self.map_widget.set_database_path(db_path)
+                print(f"[Map] Offline-Datenbank aktiv: {db_path}")
+            except Exception as e:
+                print(f"[Map] Fehler beim DB-Zugriff: {e}")
+
+        # 4. Startposition aus Config setzen
         map_conf = self.config.get("MAP", {})
         home_lat = map_conf.get("home_lat", 51.9621817)
         home_lon = map_conf.get("home_lon", 9.650912)
