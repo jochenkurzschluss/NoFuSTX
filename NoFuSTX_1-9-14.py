@@ -138,10 +138,12 @@ def check_dependencies():
             win = tk.Toplevel()
             win.title("NoFuSTX: fehlende Abhängigkeiten")
             win.geometry("500x300")
-            text = tk.Text(win, wrap="word")
+
+            text = tk.Text(win, wrap="word", height=12, padx=10, pady=10, bg="lightgray", fg="black", font=("Arial", 10))
             text.insert("1.0", msg)
             text.pack(expand=True, fill="both")
-            button = tk.Button(win, text="Schließen", command=win.destroy)
+            
+            button = tk.Button(win, text="Schließen", command=win.destroy, bg="lightgray", fg="black", font=("Arial", 10))
             button.pack()
         except Exception:
             print(msg)
@@ -160,6 +162,7 @@ class NoFuSTX:
             print(f"Programm-Icon Fehler: {e}")
         self.root.geometry("1250x950")
         self.config_file = "nofustx_config.json"
+        self.counter_number_msg = 1
 
         # Einsatz-Session-Log (pro Programmstart eine Datei)
         self.session_log_file = None
@@ -189,9 +192,11 @@ class NoFuSTX:
                 "APRS_IS": {
                     "active": True,
                     "server": "euro.aprs2.net",
-                    "port": "14480",
+                    "port": "14580",
                     "call": "NOCALL",
                     "passcode": "00000",
+                    "range_km": "20",
+                    "view_range": "13",
                 },
                 "WINLINK": {
                     "active": True,
@@ -236,6 +241,7 @@ class NoFuSTX:
                 {"name": "Zentrale (NoFuS-E)", "type": "NoFuS-E", "status": True},
                 {"name": "Mobil 1", "type": "NoFuS-M", "status": True},
                 {"name": "Trupp A", "type": "NoFuS-P", "status": False},
+                {"name": "Trupp B", "type": "NoFuS-P", "status": False},
             ],
             # Standard-Lagekarte: ca. 10 km Radius um 51.9621817 / 9.6509120
             "MAP": {
@@ -314,7 +320,8 @@ class NoFuSTX:
         os.makedirs(logs_dir, exist_ok=True)
 
         self.session_log_start_utc = datetime.datetime.utcnow()
-        start_str = self.session_log_start_utc.strftime("%Y%m%d-%H%M%SUTC")
+        # start_str = self.session_log_start_utc.strftime("%Y-%m-%d_%H-%M-%S-UTC")
+        start_str = self.session_log_start_utc.strftime("%d-%m-%Y_%H-%M-%S-UTC")
 
         # Initialer Dateiname nur mit Startzeit; beim Beenden wird umbenannt
         filename = f"einsatz-{start_str}_RUNNING.txt"
@@ -356,7 +363,8 @@ class NoFuSTX:
             return
 
         stop_utc = datetime.datetime.utcnow()
-        stop_str = stop_utc.strftime("%Y%m%d-%H%M%SUTC")
+        # stop_str = stop_utc.strftime("%Y-%m-%d_%H-%M-%S-UTC") # Änderung: Datum im Format DD-MM-YYYY
+        stop_str = stop_utc.strftime("%d-%m-%Y_%H-%M-%S-UTC")
 
         try:
             if self.session_log_file:
@@ -374,7 +382,7 @@ class NoFuSTX:
         # Neuen Dateinamen mit Start- und Stopzeit erzeugen
         base_dir = os.path.dirname(os.path.abspath(__file__))
         logs_dir = os.path.join(base_dir, "logs")
-        start_str = self.session_log_start_utc.strftime("%Y%m%d-%H%M%SUTC")
+        start_str = self.session_log_start_utc.strftime("%d-%m-%Y_%H-%M-%S-UTC")
         new_name = os.path.join(
             logs_dir, f"einsatz-{start_str}_{stop_str}.txt"
         )
@@ -407,7 +415,7 @@ class NoFuSTX:
             try:
                 self.log_list.insert(
                     0,
-                    f"{datetime.datetime.utcnow().strftime('%H:%M')} : APRS deaktiviert (aprslib nicht installiert).",
+                    f"{datetime.datetime.utcnow().strftime('%H:%M:%S')} : APRS deaktiviert (aprslib nicht installiert).",
                 )
             except Exception:
                 pass
@@ -643,13 +651,14 @@ class NoFuSTX:
         server = conf.get("server", "euro.aprs2.net")
         port = int(conf.get("port", "14580"))
         passwd = conf.get("passcode", "-1")
+        range_km = conf.get("range_km", 20)  # Empfangsbereich in Kilometern um die HOME-Position
 
         if not call or call == "NOCALL":
             # Ohne gültiges Rufzeichen verbinden wir uns nicht mit APRS-IS
             self.aprs_update_queue.put(
                 {
                     "type": "log",
-                    "message": f"{datetime.datetime.utcnow().strftime('%H:%M')} : APRS-IS nicht aktiv (Rufzeichen NOCALL).",
+                    "message": f"{datetime.datetime.utcnow().strftime('%H:%M:%S')} : APRS-IS nicht aktiv (Rufzeichen NOCALL).",
                 }
             )
             return
@@ -682,14 +691,15 @@ class NoFuSTX:
                     # Filter optional, z.B. nur Positionen in der Nähe;
                     # hier generischer Empfang, da reine Lagedarstellung.
                 )
-                range_km = 10
+                # range_km = 20  # Empfangsbereich in Kilometern um die HOME-Position
                 # home_lat = self.config.get("HOME_LAT", 51.9621817)
                 # home_lon = self.config.get("HOME_LON", 9.650912)
                 map_conf = self.config.get("MAP", {})
                 home_lat = map_conf.get("home_lat", 51.9621817)
                 home_lon = map_conf.get("home_lon", 9.650912)
-                filter_str = f"t/po m/{range_km}/{home_lat:.4f}/{home_lon:.4f}"
-                print(f"APRS-IS Filter: {filter_str}") # Debug-Ausgabe
+                # filter_str = f"t/po m/{range_km}/{home_lat:.4f}/{home_lon:.4f}" # Falsches Format, korrigiert zu:
+                filter_str = f"r/{home_lat:.4f}/{home_lon:.4f}/{range_km}"
+                # print(f"APRS-IS Filter: {filter_str}") # Debug-Ausgabe
                 # is_conn.set_filter("t/po m/10/51.9622/9.6509")  # Beispiel: Filter auf 10 km um 51.9622N, 9.6509E
                 is_conn.set_filter(filter_str)  # Beispiel: Filter auf 100 km um HOME-Position
                 is_conn.connect()
@@ -706,7 +716,7 @@ class NoFuSTX:
                 self.aprs_update_queue.put(
                     {
                         "type": "log",
-                        "message": f"{datetime.datetime.utcnow().strftime('%H:%M')} : APRS-IS Verbindung fehlgeschlagen – neuer Versuch in 30 s.",
+                        "message": f"{datetime.datetime.utcnow().strftime('%H:%M:%S')} : APRS-IS Verbindung fehlgeschlagen – neuer Versuch in 30 s.",
                     }
                 )
                 time.sleep(30)
@@ -739,7 +749,7 @@ class NoFuSTX:
             self.aprs_update_queue.put(
                 {
                     "type": "log",
-                    "message": f"{datetime.datetime.utcnow().strftime('%H:%M')} : AX.25-Listener für {device} konnte nicht gestartet werden.",
+                    "message": f"{datetime.datetime.utcnow().strftime('%H:%M:%S')} : AX.25-Listener für {device} konnte nicht gestartet werden.",
                 }
             )
             return
@@ -747,7 +757,7 @@ class NoFuSTX:
         self.aprs_update_queue.put(
             {
                 "type": "log",
-                "message": f"{datetime.datetime.utcnow().strftime('%H:%M')} : AX.25-Listener aktiv auf {device}.",
+                "message": f"{datetime.datetime.utcnow().strftime('%H:%M:%S')} : AX.25-Listener aktiv auf {device}.",
             }
         )
 
@@ -849,7 +859,7 @@ class NoFuSTX:
         # Kurzer Eintrag im Einsatz-Log
         if hasattr(self, "log_list"):
             log_text = (
-                f"{datetime.datetime.utcnow().strftime('%H:%M')} : "
+                f"{datetime.datetime.utcnow().strftime('%H:%M:%S')} : "
                 f"APRS {src} ({source_type}) -> {symbol_table}{symbol_code} "
                 f"@ {lat:.5f},{lon:.5f}"
             )
@@ -900,7 +910,7 @@ class NoFuSTX:
         # Log-Eintrag
         if hasattr(self, "log_list"):
             msg = (
-                f"{datetime.datetime.utcnow().strftime('%H:%M')} : "
+                f"{datetime.datetime.utcnow().strftime('%H:%M:%S')} : "
                 f"HOME-Position gesetzt @ {lat:.5f},{lon:.5f}"
             )
             try:
@@ -1141,7 +1151,8 @@ class NoFuSTX:
         ttk.Button(
             btn_f,
             text="Einheit hinzufügen",
-            command=lambda: messagebox.showinfo("Info", "Funktion in v1.9.14 geplant."),
+            # command=lambda: messagebox.showinfo("Info", "Funktion in v1.9.14 geplant."),
+            command=self.add_unit
         ).pack(side="left", padx=5)
 
         ttk.Button(
@@ -1151,6 +1162,63 @@ class NoFuSTX:
         ttk.Button(
             btn_f, text="Einheit löschen", command=self.delete_unit
         ).pack(side="left", padx=5)
+
+    def add_unit(self):
+        """Erstellt eine neue Einheit und speichert sie in der Config."""
+        # 1. Ein kleines Eingabefenster öffnen
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Neue Einheit")
+        dialog.geometry("300x200")
+        
+        ttk.Label(dialog, text="Name/Rufname:").pack(pady=5)
+        name_entry = ttk.Entry(dialog)
+        name_entry.pack(padx=10, fill="x")
+
+        # 2. Typ als Dropdown (Combobox)
+        ttk.Label(dialog, text="Typ der Einheit:").pack(pady=5)
+        
+        # Hier definieren wir die Liste der Fahrzeugtypen
+        # Du kannst diese Liste beliebig erweitern!
+        fzg_typen = [
+            "NoFuS-SE (Stationäre Einsatzleitung)",
+            "NoFuS-S (Mobile Einsatzleitung)",
+            "NoFuS-M (Mobile Einheit)",
+            "NoFuS-M+ (Mobile Einheit mit Rettungsdienstlicher / Feuerwehrtechnischer o.ä. Ausbildung)",
+            "NoFuS-M-F (Mobile Einheit Ohne Afu Lizensierung)",
+            "NoFuS-M-F+ (Mobile Einheit Ohne Afu Lizensierung, mit Rettungsdienstlicher / Feuerwehrtechnischer o.ä. Ausbildung)",
+            "NoFuS-P (Portabel Einheit)",
+            "NoFuS-P+ (Portabel Einheit mit Rettungsdienstlicher / Feuerwehrtechnischer o.ä. Ausbildung)",
+            "NoFuS-P-F (Portabel Einheit Ohne Afu Lizensierung)",
+            "NoFuS-P-F+ (Portabel Einheit Ohne Afu Lizensierung, mit Rettungsdienstlicher / Feuerwehrtechnischer o.ä. Ausbildung)"
+        ]
+        
+        type_dropdown = ttk.Combobox(dialog, values=fzg_typen, state="readonly")
+        type_dropdown.pack(padx=20, fill="x")
+        type_dropdown.set("NoFuS-SE (Stationäre Einsatzleitung)") # Standardwert
+
+        def save():
+            name = name_entry.get().strip()
+            u_type = type_dropdown.get().strip()
+            
+            if name and u_type:
+                # Neue Einheit als Dict anlegen
+                new_entry = {"name": name, "type": u_type, "status": "True"}
+                
+                # In die Liste in der Config einfügen
+                if "UNITS" not in self.config:
+                    self.config["UNITS"] = []
+                
+                self.config["UNITS"].append(new_entry)
+                
+                # Genau wie beim Löschen: Speichern und Liste neu zeichnen
+                self.save_settings()
+                self.refresh_unit_tree()
+                
+                dialog.destroy()
+            else:
+                messagebox.showwarning("Fehler", "Bitte alles ausfüllen!")
+
+        ttk.Button(dialog, text="Hinzufügen", command=save).pack(pady=15)
 
     def refresh_unit_tree(self):
         for i in self.tree.get_children():
@@ -1187,7 +1255,7 @@ class NoFuSTX:
         self.tab_msg.rowconfigure(2, weight=1)   # Meldungstext (soll wachsen)
         self.tab_msg.rowconfigure(3, weight=0)   # Buttonzeile
         self.tab_msg.columnconfigure(0, weight=1)
-
+        
         # Kopfdaten
         header_f = ttk.LabelFrame(self.tab_msg, text="Kopfdaten (IARU Standard)")
         header_f.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
@@ -1198,17 +1266,35 @@ class NoFuSTX:
         for i, title in enumerate(titles):
             header_f.columnconfigure(i, weight=1)
             tk.Label(header_f, text=title).grid(row=0, column=i, padx=5, sticky="w")
-            ent = ttk.Entry(header_f)
-            ent.grid(row=1, column=i, padx=5, pady=5, sticky="ew")
-            self.msg_fields[title] = ent
+            
+            if title == "Zeit (UTC)":
+                # Container für Feld + Checkbox
+                time_container = ttk.Frame(header_f)
+                time_container.grid(row=1, column=i, sticky="ew")
+                time_container.columnconfigure(0, weight=1) # Entry soll wachsen
+
+                ent = ttk.Entry(time_container)
+                ent.grid(row=0, column=0, padx=(5, 2), pady=5, sticky="ew")
+                self.msg_fields[title] = ent
+
+                self.auto_time_var = tk.BooleanVar(value=True)
+                cb = tk.Checkbutton(time_container, text="Auto", variable=self.auto_time_var)
+                cb.grid(row=0, column=1, padx=(0, 5))
+            else:
+                ent = ttk.Entry(header_f)
+                ent.grid(row=1, column=i, padx=5, pady=5, sticky="ew")
+                self.msg_fields[title] = ent
 
         # Zeit & Datum vorbelegen (UTC)
         self.msg_fields["Zeit (UTC)"].insert(
-            0, datetime.datetime.utcnow().strftime("%H:%M")
+            0, datetime.datetime.utcnow().strftime("%H:%M:%S")
         )
         self.msg_fields["Datum"].insert(
             0, datetime.datetime.utcnow().strftime("%d.%m.%Y")
         )
+
+        self.msg_fields["Nummer"].insert(0, str(self.counter_number_msg))  # Standard-Nummer 1 für die erste Meldung
+        self.update_iaru_time()
 
         # Wichtigkeit
         prio_f = ttk.LabelFrame(self.tab_msg, text="Wichtigkeit")
@@ -1270,6 +1356,63 @@ class NoFuSTX:
         ttk.Button(
             control_f, text="Senden & Loggen", command=self.send_iaru_msg
         ).grid(row=0, column=4, padx=5, sticky="e")
+
+        ttk.Button(
+            control_f, text="Leeren", command=self.clear_iaru_form
+        ).grid(row=0, column=5, padx=5, sticky="e")
+
+        self.msg_text.bind("<KeyRelease>", self.update_word_count)
+
+    def clear_iaru_form(self):
+        """Leert alle Felder des IARU-Formulars für eine neue Meldung."""
+
+        self.counter_number_msg += 1  # Nummer für die nächste Meldung erhöhen
+        # print(f"Vorbereitet für Meldung Nr. {self.counter_number_msg}.")  # Debug-Ausgabe
+        # Alle Entry-Felder in der Kopfzeile leeren
+        for title, field in self.msg_fields.items():
+            field.delete(0, tk.END)
+        
+        # Das große Textfeld leeren
+        self.msg_text.delete("1.0", tk.END)
+        
+        # Wichtigkeit auf Standard zurücksetzen
+        self.prio_var.set("Routine")
+        
+        # Datum und Zeit sofort wieder neu belegen
+        self.msg_fields["Datum"].insert(0, datetime.datetime.utcnow().strftime("%d.%m.%Y"))
+        # Die Zeit wird durch update_iaru_time automatisch befüllt, wenn Auto aktiv ist
+        
+        # Wort-Zähler auf 0 setzen
+        self.update_word_count()
+        
+        self.msg_fields["Nummer"].insert(0, str(self.counter_number_msg))  # Neue Nummer eintragen
+        # print("IARU-Formular wurde geleert.")
+
+    def update_word_count(self, event=None):
+     """Zählt die Wörter im Textfeld und schreibt sie in das Feld 'Wort-Zähler'."""
+     content = self.msg_text.get("1.0", tk.END).strip()
+     if not content:
+         count = 0
+     else:
+         # Zählt alles, was durch Leerzeichen getrennt ist
+         count = len(content.split())
+
+     field = self.msg_fields["Wort-Zähler"]
+     field.delete(0, tk.END)
+     field.insert(0, str(count))
+
+    def update_iaru_time(self):
+        """Aktualisiert die UTC-Zeit im Formular, wenn Auto-Zeit aktiv ist."""
+        # Prüfen, ob das Tab/Feld überhaupt noch existiert (vermeidet Fehler beim Schließen)
+        if "Zeit (UTC)" in self.msg_fields and self.msg_fields["Zeit (UTC)"].winfo_exists():
+            if self.auto_time_var.get():
+                now = datetime.datetime.utcnow().strftime("%H:%M:%S")
+                # Feld leeren und neue Zeit rein
+                self.msg_fields["Zeit (UTC)"].delete(0, tk.END)
+                self.msg_fields["Zeit (UTC)"].insert(0, now)
+        
+        # Die Funktion ruft sich nach 1000ms (1 Sekunde) selbst wieder auf
+        self.root.after(1000, self.update_iaru_time)
 
     # ---------- Über NoFuSTX ----------
     def show_about_window(self):
@@ -1402,6 +1545,7 @@ class NoFuSTX:
                 w.destroy()
             self.ax_temp_list = []
 
+            
             for i, port in enumerate(self.config["MODES"]["AX25_PORTS"]):
                 p_frame = ttk.LabelFrame(self.ax_scroll_f, text=f"AX.25 Port #{i}")
                 p_frame.pack(fill="x", padx=10, pady=2)
@@ -1421,12 +1565,32 @@ class NoFuSTX:
                 call.insert(0, port.get("call", "NOCALL"))
                 call.grid(row=0, column=3, padx=5)
 
+                btn_del = ttk.Button(p_frame, text="X", width=3, 
+                                     command=lambda idx=i: dummy(idx))
+                btn_del.grid(row=0, column=4, padx=5)
+
                 self.ax_temp_list.append(
                     {"active": v, "device": dev, "nickname": nick, "call": call}
                 )
-
         render_ax_ports()
 
+        def add_ax_port():
+            dialog_ax_add = tk.Toplevel(self.root)
+            dialog_ax_add.title("Neuen AX.25 Port hinzufügen")
+            dialog_ax_add.geometry("300x150")
+            ttk.Label(dialog_ax_add, text="Gerät (z.B. ax0):").pack(pady=5)
+            ttk.Label(dialog_ax_add, text="Nickname:").pack(pady=5)
+            ttk.Label(dialog_ax_add, text="call").pack(pady=5)
+
+            # self.config["MODES"]["AX25_PORTS"].append(
+            #     {"active": False, "device": "ax0", "nickname": "", "call": "NOCALL"}
+            # )
+            render_ax_ports()
+
+        def dummy(idx):
+            if messagebox.askyesno("Löschen", f"AX.25 Port #{idx} entfernen?"):
+                # del self.config["MODES"]["AX25_PORTS"][idx]
+                render_ax_ports()
         # Drucker
         pr_f = ttk.Frame(nb)
         nb.add(pr_f, text="Drucker")
@@ -1577,10 +1741,11 @@ class NoFuSTX:
     def log_iaru_msg(self):
         nr = self.msg_fields["Nummer"].get()
         ts = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-        log_line = f"{datetime.datetime.utcnow().strftime('%H:%M')} : MSG #{nr} archiviert."
+        log_line = f"{datetime.datetime.utcnow().strftime('%H:%M:%S')} : MSG #{nr} archiviert."
         self.log_list.insert(0, log_line)
         # Auch in die Einsatz-Session-Datei schreiben
         self.write_session_log(f"[{ts}] {log_line}")
+        self.clear_iaru_form()
         messagebox.showinfo("NoFuSTX", "Meldung gespeichert.")
 
     def send_iaru_msg(self):
@@ -1594,7 +1759,9 @@ class NoFuSTX:
         prio = self.prio_var.get() if hasattr(self, "prio_var") else ""
         body = self.msg_text.get("1.0", "end").strip()
 
-        full_text = "IARU-Meldung\n" + "\n".join(header_lines) + f"\nWICHTIGKEIT: {prio}\n\n{body}\n"
+        text_trenner = "####################### Meldungstext #######################\n \n \n"
+
+        full_text = text_trenner + "--- IARU-Meldung ---\n" + "\n".join(header_lines) + f"\nWICHTIGKEIT: {prio}\n\n{body}\n"
 
         # Gewählten Digimode ermitteln
         mode = self.send_mode_var.get() if hasattr(self, "send_mode_var") else "Nur Log"
@@ -1613,7 +1780,7 @@ class NoFuSTX:
 
         # Immer ins Einsatz-Log und in die Einsatz-Session-Datei übernehmen
         nr = self.msg_fields["Nummer"].get()
-        time_str = datetime.datetime.utcnow().strftime("%H:%M")
+        time_str = datetime.datetime.utcnow().strftime("%H:%M:%S")
         ts = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
         if mode and mode != "Nur Log":
             log_text = f"{time_str} : MSG #{nr} gesendet über {mode}."
@@ -1636,6 +1803,7 @@ class NoFuSTX:
         if hasattr(self, "print_on_send") and self.print_on_send.get():
             self.print_message(full_text)
 
+        self.clear_iaru_form()
         messagebox.showinfo("NoFuSTX", "Meldung gesendet und protokolliert.")
 
     def setup_log_tab(self):
