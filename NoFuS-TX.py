@@ -16,7 +16,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 # =============================================================================
 # =============================================================================
-# NoFuSTX - IMPORT SEKTION (v1.9.14c)
+# NoFuSTX - IMPORT SEKTION (v1.9.15b)
 # Unterstützt: APRS, JS8Call, VARA, Winlink, MT63, RTTY, SSTV, FAX, AX.25
 # Plattformen: Windows, Linux, macOS
 # =============================================================================
@@ -47,6 +47,7 @@ import queue            # Thread-sichere Datenübergabe (z.B. APRS-Pakete)
 import re
 import time
 
+
 # --- 2. Grafische Benutzeroberfläche & Karten (GUI) ---
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -61,6 +62,14 @@ try:
 except ImportError:
     Image = None
     ImageTk = None
+# --- Die Terminals im OS nutzen
+from tkterminal import Terminal
+
+try:
+    import tkterminal
+except ImportError:
+    tkterminal = None
+
 
 # --- 3. Funk- & Modem-Schnittstellen (Externe Module) ---
 # Hinweis: Diese müssen über den check_dependencies() geprüft werden
@@ -113,6 +122,11 @@ try:
 except ImportError:
     pyvara = None
 
+try:
+    import fitz  # Für PDF-Generierung (z.B. Einsatzberichte)
+except ImportError:
+    fitz = None
+import glob
 # MT63 ist bereits über pyfldigi abgedeckt (falls du das so willst), oder füge eine separate Lib hinzu:
 # try:
 #     import pymt63  # Falls eine spezifische MT63-Bibliothek existiert
@@ -163,7 +177,7 @@ def check_dependencies():
             + "\n\n(Die App kann auch ohne diese Pakete starten, aber bestimmte Funktionen sind dann deaktiviert.)"
         )
         try:
-            # Anstatt Messagebox ein kopierbares Textfeld öffnen
+            # Anstatt Messagebox ein kopierbares Textfeld öffnen !!!
             win = tk.Toplevel()
             win.title("NoFuSTX: fehlende Abhängigkeiten")
             win.geometry("500x300")
@@ -182,7 +196,7 @@ def check_dependencies():
 class NoFuSTX:
     def __init__(self, root):
         self.root = root
-        self.root.title("NoFuSTX - Einsatzleitsoftware v1.9.14c")
+        self.root.title("NoFuSTX - Einsatzleitsoftware v1.9.15b")
         try:
             # Wir laden das PNG als PhotoImage
             icon_img = tk.PhotoImage(file="icons/NoFuSTX.png")
@@ -191,6 +205,7 @@ class NoFuSTX:
             print(f"Programm-Icon Fehler: {e}")
         self.root.geometry("1250x950")
         self.config_file = "nofustx_config.json"
+        self.frequency_file = "notfunk_freqs.json"
         self.counter_number_msg = 1
 
         # Einsatz-Session-Log (pro Programmstart eine Datei)
@@ -211,7 +226,7 @@ class NoFuSTX:
             "LORA_MODEMS": ["LongFast", "LongSlow", "ShortFast"]
         }
 
-        # Vollständige Default-Config inkl. neuer Felder
+        # Vollständige Default-Config inkl. neuer Felder für Modi oder Ergänungen
         self.default_config = {
             "MODES": {
                 "AX25_PORTS": [
@@ -279,8 +294,26 @@ class NoFuSTX:
                 "zoom": 10,
             },
         }
+        # Vollständige Default-Frequenzen mit Beschreibungen in .jason für jede Guppe zu Ändern!
+        self.default_frequencies = {
+            "FREQUENCIES": [
+                ["FM / Fonie", "145.500 MHz", "in Fonie zur Kommunikation der Einheiten untereinander"],
+                ["FM / AFSK","144.800 MHz", "APRS zur Positionsermittlung"],
+                ["FM / Fonie","149.050 MHz", "Freenet in Fonie zur Kommunikation der Einheiten untereinander"],
+                ["FM / Fonie","446.03125 MHz", "PMR in Fonie zur Kommunikation der Einheiten untereinander"],
+                ["FM / Fonie","430.500 MHz", "in Fonie zur Kommunikation der Einheiten untereinander"],
+                ["FM / Fonie","433.500 MHz", "in Fonie zur Kommunikation der Einheiten untereinander"],
+                ["FM / Fonie","28.325 MHz", "in Fonie zur Kommunikation der Einheiten untereinander"],
+                ["FM / Fonie","27.065 MHz", "CB in Fonie zur Kommunikation der Einheiten untereinander"],
+                ["FM / AFSK","27.235 MHz", "CB AFSK/APRS zur Positionsermittlung und Datenübertragung"],
+                ["USB / Fonie","14.300 MHz", "in Fonie zur Kommunikation über sehr große Entfernungen (Grenzübergreifend)"],
+                ["LSB / Fonie","7.110 kHz", "LSB in Fonie zur Kommunikation über sehr große Entfernungen (Deutschland weit)"],
+                ["LSB / Fonie","3.760 kHz", "LSB in Fonie zur Kommunikation über sehr große Entfernungen (Deutschland weit)"],
+                ]
+        }
 
         self.load_settings()
+        self.load_frequencies()
         check_dependencies()
         self.setup_ui()
         self.init_session_log()
@@ -330,6 +363,18 @@ class NoFuSTX:
                     self.config["MODES"]["RTTY"]["soundcard"] = "System"
             except Exception:
                 self.config = self.default_config
+    # --------- FREQUENZENLADUNG & -SPEICHERUNG ----------
+    def load_frequencies(self):
+        if not os.path.exists(self.frequency_file):
+            self.frequencies = self.default_frequencies
+            with open(self.frequency_file, "w") as f:
+                json.dump(self.frequencies, f, indent=4)
+        else:
+            try:
+                with open(self.frequency_file, "r") as f:
+                    self.frequencies = json.load(f)
+            except Exception:
+                self.frequencies = self.default_frequencies
 
     def save_settings(self):
         with open(self.config_file, "w") as f:
@@ -452,7 +497,7 @@ class NoFuSTX:
 
         # Rechtsklick-Menü für HOME-Position auf der Karte
         try:
-            # pass_coords=True sorgt dafür, dass wir (lat, lon) erhalten
+            # pass_coords=True sorgt dafür, dass wir (lat, lon) erhalten und nicht das Event-Objekt
             self.map_widget.add_right_click_menu_command(
                 label="Eigene Position hier setzen",
                 command=self.set_home_position_from_click,
@@ -482,7 +527,7 @@ class NoFuSTX:
             except Exception:
                 self.home_marker = None
 
-        # Empfangs-Threads starten (listen-only)
+        # Empfangs-Threads starten (listen-only Weil kein Lizens checkt) – die Threads stellen Pakete in die aprs_update_queue, die wir im GUI-Thread abarbeiten
         modes = self.config.get("MODES", [])
 
         aprs_is_conf = modes.get("APRS_IS", {})
@@ -582,9 +627,9 @@ class NoFuSTX:
         if not marker:
             return
 
-        # 1) Default-Shape ausblenden
+        # 1) Default-Shape ausblenden (je nach tkintermapview-Version könnte das ein Kreis oder Dreieck sein)
         try:
-            # if hasattr(marker, "canvas_icon"):
+            # if hasattr(marker, "canvas_icon"): # Muss hier weiter geprüft werden ob es bei der Finlen Version schon andere Methoden gibt!
                 # self.map_widget.canvas.itemconfig(marker.canvas_icon, state="hidden")
             if hasattr(marker, "big_circle"):
                 self.map_widget.canvas.itemconfig(marker.big_circle, state="hidden")
@@ -664,6 +709,89 @@ class NoFuSTX:
             "symbol_table": symbol_table,
             "symbol_code": symbol_code,
         }
+    
+    def extract_aprs_weather(self, packet):
+        """Verbesserte Extraktion, die auch Unter-Dicts von aprslib prüft."""
+        if not isinstance(packet, dict):
+            return None
+        
+        # Holen wir uns das Wetter-Unter-Dict, falls vorhanden
+        wx_sub = packet.get("weather", {})
+        
+        # Wir sammeln die Daten und schauen sowohl im Hauptpaket als auch im Unter-Dict nach
+        # aprslib nutzt manchmal 'temperature', manchmal nur 'temp'
+        temp = packet.get("temperature") or wx_sub.get("temperature") or packet.get("temp")
+        hum = packet.get("humidity") or wx_sub.get("humidity") or packet.get("hum")
+        press = packet.get("pressure") or wx_sub.get("pressure") or packet.get("press")
+        wind_s = packet.get("wind_speed") or wx_sub.get("wind_speed")
+        wind_d = packet.get("wind_direction") or wx_sub.get("wind_direction")
+        rain = packet.get("rain_24h") or wx_sub.get("rain_24h")
+
+        # Nur wenn mindestens ein relevanter Wert da ist, schicken wir das Event
+        if all(v is None for v in [temp, hum, press, wind_s]):
+            # Sonderfall: Wenn nichts gefunden wurde, schauen wir kurz in den Kommentar
+            # Manche Stationen senden Wetter nur als Text im Kommentar
+            comment = packet.get("comment", "")
+            if "t" not in comment.lower(): # Grober Check
+                return None
+
+        return {
+            "temp": temp,
+            "hum": hum,
+            "press": press,
+            "wind_speed": wind_s,
+            "wind_dir": wind_d,
+            "rain_24h": rain,
+            "src": packet.get("from") or packet.get("source") or "UNKN"
+        }
+
+
+    def handle_weather_event(self, event):
+        """
+        Nimmt die Wetterdaten aus der Queue entgegen und aktualisiert die 
+        Labels im Wetter-Tab (tab_wx).
+        """
+        wx = event.get("wx_data", {})
+        callsign = event.get("callsign", "Unbekannt")
+
+        try:
+            # 1. Die UI-Variablen (tk.StringVar) aktualisieren
+            # Wir prüfen mit .get(), ob der Wert existiert, sonst nutzen wir "--"
+            
+            temp = wx.get("temp")
+            if temp is not None:
+                self.wx_vars["temp"].set(f"{float(temp):.1f} °C")
+            
+            hum = wx.get("hum")
+            if hum is not None:
+                self.wx_vars["hum"].set(f"{hum} %")
+                
+            press = wx.get("press")
+            if press is not None:
+                self.wx_vars["press"].set(f"{float(press):.1f} hPa")
+
+            wind_s = wx.get("wind_speed")
+            if wind_s is not None:
+                # Umrechnung m/s in km/h falls nötig, aprslib liefert oft m/s
+                self.wx_vars["wind"].set(f"{float(wind_s) * 3.6:.1f} km/h")
+
+            rain = wx.get("rain_24h")
+            if rain is not None:
+                self.wx_vars["rain"].set(f"{rain} mm")
+
+            self.wx_vars["station"].set(callsign)
+
+            # 2. Eintrag in die Listbox auf der rechten Seite
+            timestamp = datetime.datetime.now().strftime("%H:%M")
+            entry_text = f"{timestamp} | {callsign} | {self.wx_vars['temp'].get()}"
+            self.wx_listbox.insert(0, entry_text)
+
+            # Liste auf 50 Einträge begrenzen
+            if self.wx_listbox.size() > 50:
+                self.wx_listbox.delete(tk.END)
+
+        except Exception as e:
+            print(f"Fehler bei der Wetter-Anzeige: {e}")
 
     # ---------- APRS HINTERGRUND-THREADS ----------
     def aprs_is_worker(self):
@@ -683,7 +811,7 @@ class NoFuSTX:
         range_km = conf.get("range_km", 20)  # Empfangsbereich in Kilometern um die HOME-Position
 
         if not call or call == "NOCALL":
-            # Ohne gültiges Rufzeichen verbinden wir uns nicht mit APRS-IS
+            # Ohne gültiges Rufzeichen verbinden wir uns nicht mit APRS-IS kein call check möglich, in der 3.0 umsetzen ?!
             self.aprs_update_queue.put(
                 {
                     "type": "log",
@@ -693,21 +821,22 @@ class NoFuSTX:
             return
 
         def _callback(packet):
-            self.aprs_update_queue.put(packet)
+            # 1. Wetter checken
+            wx = self.extract_aprs_weather(packet)
+            if wx:
+                self.aprs_update_queue.put({
+                    "type": "weather",
+                    "callsign": wx["src"],
+                    "wx_data": wx
+                })
+
+            # 2. Position checken (bestehender Code)
             try:
-                data = packet
-                pos = self.extract_aprs_position(data)
-                if not pos:
-                    return
-                pos["source_type"] = "APRS-IS"
-                self.aprs_update_queue.put(
-                    {
-                        "type": "position",
-                        **pos,
-                    }
-                )
+                pos = self.extract_aprs_position(packet)
+                if pos:
+                    pos["source_type"] = "APRS-IS"
+                    self.aprs_update_queue.put({"type": "position", **pos})
             except Exception:
-                # Parsing-Fehler still ignorieren, um den Worker nicht zu beenden
                 return
 
         while True:
@@ -720,16 +849,13 @@ class NoFuSTX:
                     # Filter optional, z.B. nur Positionen in der Nähe;
                     # hier generischer Empfang, da reine Lagedarstellung.
                 )
-                # range_km = 20  # Empfangsbereich in Kilometern um die HOME-Position
-                # home_lat = self.config.get("HOME_LAT", 51.9621817)
-                # home_lon = self.config.get("HOME_LON", 9.650912)
                 map_conf = self.config.get("MAP", {})
                 home_lat = map_conf.get("home_lat", 51.9621817)
                 home_lon = map_conf.get("home_lon", 9.650912)
-                # filter_str = f"t/po m/{range_km}/{home_lat:.4f}/{home_lon:.4f}" # Falsches Format, korrigiert zu:
+                
                 filter_str = f"r/{home_lat:.4f}/{home_lon:.4f}/{range_km}"
                 # print(f"APRS-IS Filter: {filter_str}") # Debug-Ausgabe
-                # is_conn.set_filter("t/po m/10/51.9622/9.6509")  # Beispiel: Filter auf 10 km um 51.9622N, 9.6509E
+                
                 is_conn.set_filter(filter_str)  # Beispiel: Filter auf 100 km um HOME-Position
                 is_conn.connect()
                 self.aprs_update_queue.put(
@@ -755,7 +881,8 @@ class NoFuSTX:
         Empfang lokaler APRS-Pakete über AX.25.
         Implementierung nutzt das Systemtool 'axlisten' im Passivmodus.
         Erwartet, dass das jeweilige AX.25-Interface (z.B. ax0, ax1, kiss0) bereits
-        im System korrekt konfiguriert ist.
+        im System korrekt konfiguriert ist. 
+        ### ein Debug gedanke print(f"RAW PACKET KEYS: {packet.keys()}") auch für die _callback?
         """
         if aprslib is None:
             return
@@ -803,6 +930,14 @@ class NoFuSTX:
             try:
                 # Direkt an aprslib.parse übergeben – es versteht das APRS-Frameformat.
                 pkt = aprslib.parse(line)
+                # NEU: Wetter zuerst
+                wx = self.extract_aprs_weather(pkt)
+                if wx:
+                    self.aprs_update_queue.put({
+                        "type": "weather",
+                        "callsign": wx["src"],
+                        "wx_data": wx
+                    })
                 pos = self.extract_aprs_position(pkt)
                 if not pos:
                     continue
@@ -828,8 +963,13 @@ class NoFuSTX:
                 event = self.aprs_update_queue.get_nowait()
                 etype = event.get("type")
 
+                # --- DEBUG ZEILE: Zeigt jedes Paket in der Konsole ---
+                # print(f"DEBUG APRS: {event}")
+
                 if etype == "position":
                     self.handle_aprs_position_event(event)
+                elif etype == "weather": # <--- NEU
+                    self.handle_weather_event(event) # Diese Funktion füllt dein Wetter-Tab
                 elif etype == "log":
                     msg = event.get("message")
                     if msg and hasattr(self, "log_list"):
@@ -1069,6 +1209,7 @@ class NoFuSTX:
         except Exception as e:
             messagebox.showerror("Drucken", f"Druckfehler:\n{e}")
 
+    # --------- UI-AUFBAU & -ELEMENTE ----------
     def setup_ui(self):
         self.setup_menu()
 
@@ -1084,24 +1225,90 @@ class NoFuSTX:
         self.tab_map = ttk.Frame(self.tabs)
         self.tab_fundus = ttk.Frame(self.tabs)
         self.tab_msg = ttk.Frame(self.tabs)
+        self.tab_wx = ttk.Frame(self.tabs)
         self.tab_digi = ttk.Frame(self.tabs)
+        self.tab_help_main = ttk.Frame(self.tabs)
+        self.tab_sdr = ttk.Frame(self.tabs)
+        self.tab_os_terminal = ttk.Frame(self.tabs)
         self.tab_log = ttk.Frame(self.tabs)
 
         self.tabs.add(self.tab_map, text="Lagekarte")
         self.tabs.add(self.tab_fundus, text="Fundus / Personal")
         self.tabs.add(self.tab_msg, text="Not-Mitteilung (IARU)")
+        self.tabs.add(self.tab_wx, text="Wetter")
         self.tabs.add(self.tab_digi, text="Digimodes Terminal")
+        self.tabs.add(self.tab_help_main, text="Hilfreiches & Konzepte")
+        self.tabs.add(self.tab_sdr, text="SDR")
+        self.tabs.add(self.tab_os_terminal, text="OS-Terminal")
         self.tabs.add(self.tab_log, text="Einsatz-Log")
 
         self.setup_map_view()
         self.setup_fundus_tab()
         self.setup_message_tab()
+        self.setup_weather_tab()
         self.setup_digimode_terminals()
+        self.setup_help_and_info_tabs()
+        self.setup_sdr_tab()
+        self.setup_os_terminal_tab()
         self.setup_log_tab()
 
         # Wenn APRS-IS konfiguriert ist, beim Start automatisch Marker setzen
         self.update_aprs_on_map_initial()
 
+    
+    def setup_weather_tab(self):
+        # Einfacher Platzhalter-Text, damit der Tab nicht leer ist
+        label = tk.Label(self.tab_wx, text="Wetterinformationen werden hier angezeigt.", font=("Arial", 12))
+        label.pack(pady=20)
+        
+        for widget in self.tab_wx.winfo_children():
+            widget.destroy()
+
+        # Haupt-Container
+        self.wx_main_frame = ttk.Frame(self.tab_wx)
+        self.wx_main_frame.pack(expand=True, fill="both", padx=10, pady=10)
+
+        # LINKER BEREICH: Aktuelle Messwerte (Großanzeige)
+        self.wx_display_frame = ttk.LabelFrame(self.wx_main_frame, text=" Aktuelle Wetterdaten (APRS-WX) ")
+        self.wx_display_frame.pack(side=tk.LEFT, expand=True, fill="both", padx=5)
+
+        # Variablen für die Anzeige
+        self.wx_vars = {
+            "temp": tk.StringVar(value="-- °C"),
+            "hum": tk.StringVar(value="-- %"),
+            "press": tk.StringVar(value="---- hPa"),
+            "wind": tk.StringVar(value="-- km/h"),
+            "rain": tk.StringVar(value="-- mm"),
+            "station": tk.StringVar(value="Warte auf Daten...")
+        }
+
+        # Schicke Grid-Anordnung
+        labels = [
+            ("Temperatur:", self.wx_vars["temp"]),
+            ("Feuchtigkeit:", self.wx_vars["hum"]),
+            ("Luftdruck:", self.wx_vars["press"]),
+            ("Windgeschw.:", self.wx_vars["wind"]),
+            ("Niederschlag:", self.wx_vars["rain"]),
+            ("Letzte Station:", self.wx_vars["station"])
+        ]
+
+        for i, (txt, var) in enumerate(labels):
+            tk.Label(self.wx_display_frame, text=txt, font=("Arial", 11, "bold")).grid(row=i, column=0, sticky="w", padx=10, pady=10)
+            tk.Label(self.wx_display_frame, textvariable=var, font=("Arial", 11), fg="white", bg="black").grid(row=i, column=1, sticky="w", padx=10, pady=10)
+
+        # RECHTER BEREICH: Liste der WX-Stationen in der Nähe
+        self.wx_list_frame = ttk.LabelFrame(self.wx_main_frame, text=" Empfangene Stationen ")
+        self.wx_list_frame.pack(side=tk.RIGHT, fill="y", padx=5)
+
+        self.wx_listbox = tk.Listbox(self.wx_list_frame, width=30, font=("Courier", 10))
+        self.wx_listbox.pack(expand=True, fill="both", padx=5, pady=5)
+
+    def setup_sdr_tab(self):
+        # Einfacher Platzhalter-Text, damit der Tab nicht leer ist
+        label = tk.Label(self.tab_sdr, text="SDR-Funktionen werden hier integriert.", font=("Arial", 12))
+        label.pack(pady=20)
+    
+    # --------- UI-GRUNDSTRUKTUR & -ELEMENTE & Menü ----------
     def setup_menu(self):
         m = tk.Menu(self.root)
         self.root.config(menu=m)
@@ -1115,12 +1322,347 @@ class NoFuSTX:
         settings_m = tk.Menu(m, tearoff=0)
         m.add_cascade(label="Einstellungen", menu=settings_m)
         settings_m.add_command(label="Hardware & Modi", command=self.show_config_window)
+        m.add_console = settings_m.add_command(label="Externe Konsole", command=self.show_external_terminal_window)
 
         # Hilfe-Menü
         help_m = tk.Menu(m, tearoff=0)
         m.add_cascade(label="Hilfe", menu=help_m)
-        help_m.add_command(label="Über NoFuSTX", command=self.show_about_window)
+        help_m.add_command(label="Über NoFuSTX", command=self.show_about_window)      
 
+    def show_external_terminal_window(self):
+        # Hier kannst du den Code einfügen, um ein neues Fenster mit einem echten Terminal zu öffnen.
+        # Das könnte z.B. über subprocess.Popen mit einem Terminal-Emulator wie xterm, gnome-terminal oder cmd erfolgen.
+        # Alternativ könntest du auch eine einfache Terminal-Emulation in Tkinter implementieren, aber das ist deutlich aufwändiger.
+        messagebox.showinfo("Externe Konsole", "Eine externe Konsole wird geöffnet. Bitte beachten Sie, dass dies von Ihrem Betriebssystem abhängt und möglicherweise nicht auf allen Systemen funktioniert.")
+
+        sys_name = platform.system()
+        
+        try:
+            if sys_name == "Linux":
+                # Versuche xterm, da es meistens vorhanden ist
+                subprocess.Popen(["xterm -bg black -fg green"], start_new_session=True)
+            elif sys_name == "Windows":
+                # Startet die CMD in einem neuen Fenster
+                os.system("start cmd")
+            elif sys_name == "Darwin": # Mac
+                subprocess.Popen(["open", "-a", "Terminal"])
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Konnte Terminal nicht öffnen: {e}")
+
+   # --- OS-Terminal Tab einrichten ---
+    
+    def setup_os_terminal_tab(self):
+        # Haupt-Container für den Tab
+        self.term_container = ttk.Frame(self.tab_os_terminal)
+        self.term_container.pack(fill=tk.BOTH, expand=True)
+
+        # Zuerst nur den Disclaimer zeigen
+        self.show_terminal_disclaimer()
+
+    def show_terminal_disclaimer(self):
+        # Ein Frame für die Warnung, schön mittig platziert
+        self.discl_frame = ttk.Frame(self.term_container)
+        self.discl_frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+
+        msg = (
+            "! SYSTEM-TERMINAL (INTEGRIERT)\n\n"
+            "Dieses Terminal ist nur für einfache Systemabfragen gedacht.\n"
+            "Nutzen Sie hier KEINE interaktiven Programme wie:\n"
+            "nano, vi, mc, htop oder sudo-Abfragen.\n\n"
+            "Für volle Funktionalität nutzen Sie bitte das 'Externe Terminal'\n"
+            "über das Menü 'Einstellungen'."
+        )
+        
+        tk.Label(self.discl_frame, text=msg, justify=tk.CENTER, font=("Arial", 10)).pack(pady=10)
+        
+        start_btn = ttk.Button(self.discl_frame, text="Ich habe verstanden - Konsole starten", 
+                            command=self.activate_terminal)
+        start_btn.pack(pady=10)
+
+    def activate_terminal(self):
+        # 1. Warnung entfernen
+        if hasattr(self, 'discl_frame'):
+            self.discl_frame.destroy()
+        
+        # 2. Dein funktionierendes tkterminal laden
+        from tkterminal import Terminal
+        
+        self.terminal = Terminal(self.term_container)
+        self.terminal.pack(expand=True, fill='both')
+        
+        # 3. Konfiguration (shell=True für Linux/Win Befehle)
+        self.terminal.shell = True 
+        self.terminal.basename = "NoFuS-TX # "
+        
+        # Fokus setzen, damit man sofort tippen kann
+        self.terminal.focus_set()
+        
+    # --- NEU: Unter-Notebook für den Hilfe-Bereich mit drei Tabs ---
+    def setup_help_and_info_tabs(self):
+        """Erstellt das Unter-Notebook für den Hilfe-Bereich."""
+        self.help_notebook = ttk.Notebook(self.tab_help_main)
+        self.help_notebook.pack(expand=1, fill="both", padx=5, pady=5)
+
+        # Definition der Unter-Tabs
+        self.sub_tab_check = ttk.Frame(self.help_notebook)
+        self.sub_tab_bands = ttk.Frame(self.help_notebook)
+        self.sub_tab_manual = ttk.Frame(self.help_notebook)
+
+        self.help_notebook.add(self.sub_tab_check, text=" [*] Checkliste ")
+        self.help_notebook.add(self.sub_tab_bands, text=" i Bandpläne / Frequenzen ")
+        self.help_notebook.add(self.sub_tab_manual, text=" ? Hilfe ")
+
+        # Hier kannst du später die Funktionen zum Füllen der Tabs aufrufen:
+        self.build_checklist_content(self.sub_tab_check)
+        self.build_frequency_tables(self.sub_tab_bands)
+        self.setup_manual_tab_content(self.sub_tab_manual)
+
+    # --- NEU: Inhalte für den "Hilfe"-Tab mit PDF-Auswahl und externem Öffnen ---
+
+    def setup_manual_tab_content(self, parent_frame):
+        # ... Dein bisheriger Container-Code ...
+        main_frame = ttk.Frame(parent_frame)
+        main_frame.pack(expand=True, fill="both", padx=10, pady=10)
+
+        # --- LINKS: Anzeige & Scrollbar ---
+        self.left_info_frame = ttk.Frame(main_frame)
+        self.left_info_frame.pack(side=tk.LEFT, expand=True, fill="both")
+
+        # Steuerung für Seiten (ÜBER dem Canvas für bessere Sichtbarkeit)
+        self.page_ctrl_frame = ttk.Frame(self.left_info_frame)
+        self.page_ctrl_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
+        
+        self.btn_prev = ttk.Button(self.page_ctrl_frame, text="◀ Zurück", command=lambda: self.change_page(-1), state="disabled")
+        self.btn_prev.pack(side=tk.LEFT, padx=5)
+        
+        self.page_label = tk.Label(self.page_ctrl_frame, text="Seite: - / -", font=("Arial", 10))
+        self.page_label.pack(side=tk.LEFT, expand=True)
+        
+        self.btn_next = ttk.Button(self.page_ctrl_frame, text="Weiter ▶", command=lambda: self.change_page(1), state="disabled")
+        self.btn_next.pack(side=tk.LEFT, padx=5)
+
+        # Dein Canvas-Setup (unverändert)
+        self.pdf_scroll = ttk.Scrollbar(self.left_info_frame, orient=tk.VERTICAL)
+        self.pdf_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.pdf_canvas = tk.Canvas(self.left_info_frame, bg="gray70", yscrollcommand=self.pdf_scroll.set)
+        self.pdf_canvas.pack(side=tk.LEFT, expand=True, fill="both")
+        self.pdf_scroll.config(command=self.pdf_canvas.yview)
+
+        self.info_label = tk.Label(self.pdf_canvas, text="Keine Datei gewählt", 
+                                   font=("Arial", 11, "italic"), fg="gray", bg="white")
+        self.canvas_window = self.pdf_canvas.create_window((0, 0), window=self.info_label, anchor="nw")
+
+        # --- RECHTER BEREICH: Buttons ---
+        self.right_button_frame = ttk.Frame(main_frame)
+        self.right_button_frame.pack(side=tk.RIGHT, fill=tk.Y)
+
+        ttk.Label(self.right_button_frame, text="Handbücher / Pläne / Informatives", 
+                  font=("Arial", 10, "bold")).pack(pady=(0, 10))
+
+        # Hier werden die PDF-Buttons via refresh_pdf_buttons reingeladen
+        self.current_selected_pdf = None
+        self.refresh_pdf_buttons()
+        
+        # Der "Extern Öffnen" Button (jetzt rechts unten)
+        self.btn_open_extern = ttk.Button(self.right_button_frame, text="Dokument extern öffnen", 
+                                        command=self.open_current_pdf, state="disabled")
+        self.btn_open_extern.pack(side=tk.BOTTOM, pady=20, ipadx=10, ipady=5)
+
+    def refresh_pdf_buttons(self):
+        # Assets Pfad prüfen
+        assets_path = os.path.join(os.getcwd(), "assets")
+        if not os.path.exists(assets_path):
+            os.makedirs(assets_path)
+
+        # Alle PDFs holen
+        
+        pdf_files = glob.glob(os.path.join(assets_path, "*.pdf"))
+
+        if not pdf_files:
+            tk.Label(self.right_button_frame, text="Ordner 'assets/'\nist leer.", fg="red", font=("Arial", 9)).pack()
+        else:
+            for pdf in pdf_files:
+                name = os.path.basename(pdf)
+                # Button mit dynamischem Abstand (pady=5)
+                btn = ttk.Button(self.right_button_frame, text=name, 
+                                command=lambda p=pdf, n=name: self.select_pdf(p, n))
+                btn.pack(fill="x", padx=5, pady=3)
+
+    
+    def select_pdf(self, path, name):
+        self.current_selected_pdf = path
+        self.btn_open_extern.config(state="normal")
+        
+        # PDF im Tool anzeigen
+        self.display_pdf_preview(path)
+
+    def display_pdf_preview(self, path, page_num=0):
+        try:
+            doc = fitz.open(path)
+            self.total_pages = len(doc)
+            self.current_page = page_num
+            
+            page = doc[self.current_page]
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2)) # Dein Zoom 1.2
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            self.tk_img = ImageTk.PhotoImage(img)
+            
+            self.info_label.config(image=self.tk_img, text="") 
+            self.pdf_canvas.config(scrollregion=(0, 0, pix.width, pix.height))
+            self.pdf_canvas.yview_moveto(0)
+            
+            # Label & Button-Zustände aktualisieren
+            self.page_label.config(text=f"Seite: {self.current_page + 1} / {self.total_pages}")
+            self.btn_prev.config(state="normal" if self.current_page > 0 else "disabled")
+            self.btn_next.config(state="normal" if self.current_page < self.total_pages - 1 else "disabled")
+            
+            doc.close()
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Vorschau fehlgeschlagen: {e}")
+
+    def change_page(self, delta):
+        if hasattr(self, 'current_selected_pdf') and self.current_selected_pdf:
+            new_page = self.current_page + delta
+            if 0 <= new_page < self.total_pages:
+                self.display_pdf_preview(self.current_selected_pdf, new_page)
+
+    def open_current_pdf(self):
+        if self.current_selected_pdf:
+            import platform, subprocess
+            p = self.current_selected_pdf
+            try:
+                if platform.system() == "Windows":
+                    os.startfile(p)
+                elif platform.system() == "Darwin":
+                    subprocess.Popen(["open", p])
+                else:
+                    subprocess.Popen(["xdg-open", p])
+            except Exception as e:
+                messagebox.showerror("Fehler", f"Konnte PDF nicht öffnen: {e}")
+
+    # --- NEU: Inhalte für die Checklisten- und Frequenz-Tabs ---
+    def build_checklist_content(self, parent):
+        # Ein Rahmen für die Hardware
+        frame_hw = ttk.LabelFrame(parent, text=" Hardware & Funk ")
+        frame_hw.pack(fill="x", padx=10, pady=5)
+
+        # Die einzelnen Punkte
+        items_hw = [
+            "Funkgerät & Ersatzgerät geprüft",
+            "Antennen & Kabel (SWR-Check)",
+            "Stromversorgung (Akkus geladen, Netzteil)",
+            "Laptop & Interface-Kabel (Oder Tablet mit APK's)",
+            "Handfunkgeräte & Ersatzbatterien",
+            "Notfall-APRS-Tracker (z.B. SPOT, Garmin InReach)"
+        ]
+
+        for item in items_hw:
+            var = tk.BooleanVar()
+            # WICHTIG: master=frame_hw, damit es im Rahmen landet
+            cb = ttk.Checkbutton(frame_hw, text=item, variable=var)
+            cb.pack(anchor="w", padx=5, pady=2)
+
+        # Ein Rahmen für die Dokumente
+        frame_doc = ttk.LabelFrame(parent, text=" Dokumentation ")
+        frame_doc.pack(fill="x", padx=10, pady=5)
+
+        items_doc = [
+            "NoFu-Satz PDF / Ausdruck",
+            "Frequenzliste (Lokal)",
+            "Logbuch & Stifte",
+            "Bandpläne",
+            "IARU Not-Mitteilungsvorlage",
+            "Karten"
+        ]
+        for item in items_doc:
+            var = tk.BooleanVar()
+            ttk.Checkbutton(frame_doc, text=item, variable=var).pack(anchor="w", padx=5, pady=2)
+
+    # --- Bandpläne und Frequenzübersichten ---
+    def build_frequency_tables(self,parent):
+        self.freq_tree = ttk.Treeview(parent, columns=("Mode", "Frequenz", "Beschreibung"), show="headings")
+        self.freq_tree.heading("Mode", text="Mode")
+        self.freq_tree.heading("Frequenz", text="Frequenz",)
+        self.freq_tree.heading("Beschreibung", text="Beschreibung")
+        self.freq_tree.pack(fill="both", expand=True, padx=10, pady=10)
+
+        self.freq_tree.column("Mode", width=50, anchor="center")
+        self.freq_tree.column("Frequenz", width=90, anchor="w")
+        self.freq_tree.column("Beschreibung", width=650, anchor="w")
+        
+        freq_list = self.frequencies.get("FREQUENCIES", [])
+
+        for zeile in freq_list:
+            self.freq_tree.insert("", "end", values=(zeile[0], zeile[1], zeile[2]))
+
+        # Ein Trenner für die Optik
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=10)
+        ttk.Label(parent, text="Grafische Bandübersicht", font=("Arial", 10, "bold")).pack()
+
+        # Das Unter-Notebook für die einzelnen Bänder
+        self.bandplan_notebook = ttk.Notebook(parent)
+        self.bandplan_notebook.pack(fill="both", expand=True, padx=5, pady=5)
+
+        self.load_and_build_bandplans(self.bandplan_notebook)
+
+    # --- NEU: Dynamisches Laden der Bandpläne aus JSON und grafische Darstellung ---
+    def load_and_build_bandplans(self, parent_notebook):
+        # Datei laden (Fehlerbehandlung mit try/except wäre gut)
+        with open("band_plan.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+        
+        for band in data.get("BANDS", []):
+            # 1. Frame für den Tab erstellen
+            tab_frame = ttk.Frame(parent_notebook)
+            parent_notebook.add(tab_frame, text=f" {band['name']} ")
+            
+            # 2. Grafik zeichnen (deine bestehende Funktion)
+            # Wir übergeben die Segmente direkt aus der JSON
+            self.draw_band_diagram(tab_frame, band.get("segments", []))
+            
+            # 3. Kommentare/Infotext hinzufügen (falls vorhanden)
+            comment_text = band.get("comments", "")
+            if comment_text:
+                lbl = ttk.Label(tab_frame, text=comment_text, 
+                                font=("Arial", 8, "italic"), justify="left")
+                lbl.pack(pady=10, padx=10, anchor="w")
+
+    # --- Bandplan grafik zeichnen ---
+    def draw_band_diagram(self, parent, segments):
+        """
+        Zeigt einen farbigen Balken an. 
+        'segments' ist eine Liste von (Start, Ende, Farbe, Label)
+        """
+        canvas = tk.Canvas(parent, height=60, bg="white", highlightthickness=1, relief="sunken")
+        canvas.pack(fill="x", padx=10, pady=5)
+
+        # Wir berechnen die Breite dynamisch
+        def update_width(event):
+            canvas.delete("all")
+            w = event.width
+            # Start- und Endfrequenz des Segments bestimmen (für die Skalierung)
+            min_f = segments[0][0]
+            max_f = segments[-1][1]
+            range_f = max_f - min_f
+
+            for start, end, color, label in segments:
+                # Berechne Position auf dem Balken
+                x1 = ((start - min_f) / range_f) * w
+                x2 = ((end - min_f) / range_f) * w
+                
+                # Zeichne das farbige Rechteck (DARC-Stil)
+                canvas.create_rectangle(x1, 0, x2, 40, fill=color, outline="black")
+                # Beschriftung (nur wenn Platz ist)
+                if (x2 - x1) > 40:
+                    canvas.create_text((x1 + x2) / 2, 20, text=label, font=("Arial", 8, "bold"))
+            
+            # Skala unten drunter
+            canvas.create_text(5, 52, text=f"{min_f} MHz", anchor="w")
+            canvas.create_text(w-5, 52, text=f"{max_f} MHz", anchor="e")
+
+        canvas.bind("<Configure>", update_width)
+
+    # --- Kartenansicht mit Offline-Cache-Support ---
     def setup_map_view(self):
         """Initialisiert die Kartenansicht mit Offline-Cache-Support."""
         if tkintermapview is None:
@@ -1212,6 +1754,7 @@ class NoFuSTX:
             btn_f, text="Einheit löschen", command=self.delete_unit
         ).pack(side="left", padx=5)
 
+    # --- Neue Einheit hinzufügen ---
     def add_unit(self):
         """Erstellt eine neue Einheit und speichert sie in der Config."""
         # 1. Ein kleines Eingabefenster öffnen
@@ -1245,6 +1788,7 @@ class NoFuSTX:
         type_dropdown.pack(padx=20, fill="x")
         type_dropdown.set("NoFuS-SE (Stationäre Einsatzleitung)") # Standardwert
 
+        # --- 3. Speichern-Button mit Funktionalität
         def save():
             name = name_entry.get().strip()
             u_type = type_dropdown.get().strip()
@@ -1269,6 +1813,7 @@ class NoFuSTX:
 
         ttk.Button(dialog, text="Hinzufügen", command=save).pack(pady=15)
 
+    # --- Einheitstabelle aktualisieren --
     def refresh_unit_tree(self):
         for i in self.tree.get_children():
             self.tree.delete(i)
@@ -1276,6 +1821,7 @@ class NoFuSTX:
             stat_text = "EINSATZBEREIT" if u.get("status") else "NICHT AKTIV"
             self.tree.insert("", "end", values=(u["name"], u["type"], stat_text))
 
+    # --- Status wechseln ---
     def toggle_unit_status(self):
         sel = self.tree.selection()
         if sel:
@@ -1284,6 +1830,7 @@ class NoFuSTX:
             self.save_settings()
             self.refresh_unit_tree()
 
+    # --- Einheit löschen ---
     def delete_unit(self):
         sel = self.tree.selection()
         if sel and messagebox.askyesno("Löschen", "Einheit entfernen?"):
@@ -1412,6 +1959,7 @@ class NoFuSTX:
 
         self.msg_text.bind("<KeyRelease>", self.update_word_count)
 
+    # --- Meldungstext leeren und Formular für neue Meldung vorbereiten ---
     def clear_iaru_form(self):
         """Leert alle Felder des IARU-Formulars für eine neue Meldung."""
 
@@ -1437,6 +1985,7 @@ class NoFuSTX:
         self.msg_fields["Nummer"].insert(0, str(self.counter_number_msg))  # Neue Nummer eintragen
         # print("IARU-Formular wurde geleert.")
 
+    # --- Wort-Zähler aktualisieren ---
     def update_word_count(self, event=None):
      """Zählt die Wörter im Textfeld und schreibt sie in das Feld 'Wort-Zähler'."""
      content = self.msg_text.get("1.0", tk.END).strip()
@@ -1450,6 +1999,7 @@ class NoFuSTX:
      field.delete(0, tk.END)
      field.insert(0, str(count))
 
+    # --- Automatische UTC-Zeitaktualisierung ---
     def update_iaru_time(self):
         """Aktualisiert die UTC-Zeit im Formular, wenn Auto-Zeit aktiv ist."""
         # Prüfen, ob das Tab/Feld überhaupt noch existiert (vermeidet Fehler beim Schließen)
@@ -1469,7 +2019,7 @@ class NoFuSTX:
         about_win.title("Über NoFuSTX")
         about_win.geometry("400x300")
 
-        tk.Label(about_win, text="NoFuSTX - Einsatzleitsoftware v1.9.14c").pack(pady=10)
+        tk.Label(about_win, text="NoFuSTX - Einsatzleitsoftware v1.9.15b").pack(pady=10)
         tk.Label(about_win, text="© 2026 NoFuSTX DO2ITH").pack(pady=5)
         tk.Label(about_win, text="Alle Rechte vorbehalten.").pack(pady=10)
         tk.Label(about_win, text="E-Mail: info@ithnet.de").pack(pady=10)
@@ -1623,6 +2173,7 @@ class NoFuSTX:
                 )
         render_ax_ports()
 
+        # --- Button zum Hinzufügen eines neuen Ports
         def add_ax_port():
             dialog_ax_add = tk.Toplevel(self.root)
             dialog_ax_add.title("Neuen AX.25 Port hinzufügen")
@@ -1723,6 +2274,7 @@ class NoFuSTX:
             win, text="Konfiguration speichern", command=lambda: self.apply_config(win)
         ).pack(pady=20)
 
+    # --- Konfiguration übernehmen und Fenster schließen ---
     def apply_config(self, win):
         # AX.25 Ports übernehmen
         self.config["MODES"]["AX25_PORTS"] = [
@@ -1797,6 +2349,7 @@ class NoFuSTX:
         self.clear_iaru_form()
         messagebox.showinfo("NoFuSTX", "Meldung gespeichert.")
 
+    # --- Meldung senden (in Terminal und/oder nur Loggen) ---
     def send_iaru_msg(self):
         # IARU-Meldung als Text zusammensetzen
         header_keys = ["Nummer", "Quelle / Station", "Wort-Zähler", "Herkunft", "Zeit (UTC)", "Datum"]
@@ -1855,6 +2408,7 @@ class NoFuSTX:
         self.clear_iaru_form()
         messagebox.showinfo("NoFuSTX", "Meldung gesendet und protokolliert.")
 
+    # --- Log-Tab einrichten ---
     def setup_log_tab(self):
         self.log_list = tk.Listbox(self.tab_log, font=("Courier", 10))
         self.log_list.pack(expand=1, fill="both", padx=10, pady=10)
@@ -1865,7 +2419,8 @@ class NoFuSTX:
         self.time_label.config(text=now_utc.strftime("%d.%m.%Y - %H:%M:%S UTC"))
         self.root.after(1000, self.update_clock)
 
-
+# ---------- MAIN ----------
+# Startet die Anwendung, indem die Hauptklasse instanziiert und die Tkinter-Hauptschleife gestartet wird.
 if __name__ == "__main__":
     root = tk.Tk()
     app = NoFuSTX(root)
