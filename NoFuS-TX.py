@@ -1,5 +1,5 @@
 # =============================================================================
-# NoFuSTX - Emergency Communication Suite
+# NoFuS-TX - Emergency Communication Suite
 # Copyright (C) 2026  [Michael Herholt DO2ITH]
 #
 # This program is free software: you can redistribute it and/or modify
@@ -177,7 +177,7 @@ def check_dependencies():
             + "\n\n(Die App kann auch ohne diese Pakete starten, aber bestimmte Funktionen sind dann deaktiviert.)"
         )
         try:
-            # Anstatt Messagebox ein kopierbares Textfeld öffnen !!!
+            # Anstatt Messagebox ein kopierbares Textfeld öffnen !!! Liegt aber hinter dem Hauptfenster.
             win = tk.Toplevel()
             win.title("NoFuSTX: fehlende Abhängigkeiten")
             win.geometry("500x300")
@@ -198,7 +198,7 @@ class NoFuSTX:
         self.root = root
         self.root.title("NoFuSTX - Einsatzleitsoftware v1.9.15b")
         try:
-            # Wir laden das PNG als PhotoImage
+            # Programm-Icon
             icon_img = tk.PhotoImage(file="icons/NoFuSTX.png")
             self.root.iconphoto(False, icon_img)
         except Exception as e:
@@ -291,7 +291,7 @@ class NoFuSTX:
             "MAP": {
                 "center_lat": 51.9621817,
                 "center_lon": 9.6509120,
-                "zoom": 10,
+                "zoom": 10, # <-- bald Obsolet muss anders verarbitet werden.
             },
         }
         # Vollständige Default-Frequenzen mit Beschreibungen in .jason für jede Guppe zu Ändern!
@@ -599,7 +599,7 @@ class NoFuSTX:
             f"aprs_{t_hex}_{s_hex}.gif",
         ]
 
-        # Log-Schreiben (hilft uns beim Debuggen)
+        # Log-Schreiben (hilft beim Debuggen)
         # try:
             # with open(icon_log, "a", encoding="utf-8") as f:
                 # f.write(f"{datetime.datetime.utcnow().isoformat()} - Suche: {candidates} (Original war: {symbol_table})\n")
@@ -715,10 +715,10 @@ class NoFuSTX:
         if not isinstance(packet, dict):
             return None
         
-        # Holen wir uns das Wetter-Unter-Dict, falls vorhanden
+        # Holen wir das Wetter-Unter-Dict, falls vorhanden
         wx_sub = packet.get("weather", {})
         
-        # Wir sammeln die Daten und schauen sowohl im Hauptpaket als auch im Unter-Dict nach
+        # Sammeln der Daten und nach schauen sowohl im Hauptpaket als auch im Unter-Dict nach
         # aprslib nutzt manchmal 'temperature', manchmal nur 'temp'
         temp = packet.get("temperature") or wx_sub.get("temperature") or packet.get("temp")
         hum = packet.get("humidity") or wx_sub.get("humidity") or packet.get("hum")
@@ -756,7 +756,7 @@ class NoFuSTX:
 
         try:
             # 1. Die UI-Variablen (tk.StringVar) aktualisieren
-            # Wir prüfen mit .get(), ob der Wert existiert, sonst nutzen wir "--"
+            # Prüfen mit .get(), ob der Wert existiert, sonst "--" nutzen
             
             temp = wx.get("temp")
             if temp is not None:
@@ -811,7 +811,7 @@ class NoFuSTX:
         range_km = conf.get("range_km", 20)  # Empfangsbereich in Kilometern um die HOME-Position
 
         if not call or call == "NOCALL":
-            # Ohne gültiges Rufzeichen verbinden wir uns nicht mit APRS-IS kein call check möglich, in der 3.0 umsetzen ?!
+            # Ohne gültiges Rufzeichen nicht verbinden mit APRS-IS kein call check möglich, in der 3.0 umsetzen ?!
             self.aprs_update_queue.put(
                 {
                     "type": "log",
@@ -830,7 +830,7 @@ class NoFuSTX:
                     "wx_data": wx
                 })
 
-            # 2. Position checken (bestehender Code)
+            # 2. Position checken (bestehender alter Code)
             try:
                 pos = self.extract_aprs_position(packet)
                 if pos:
@@ -1009,7 +1009,7 @@ class NoFuSTX:
 
         marker = self.aprs_markers.get(key)
         try:
-            # Alten Marker vorher löschen, falls Position sich ändert
+            # Alten Marker vorher löschen, falls Position sich ändert !!!
             if marker is not None:
                 self._remove_marker(marker)
                 del self.aprs_markers[key]
@@ -1330,9 +1330,7 @@ class NoFuSTX:
         help_m.add_command(label="Über NoFuSTX", command=self.show_about_window)      
 
     def show_external_terminal_window(self):
-        # Hier kannst du den Code einfügen, um ein neues Fenster mit einem echten Terminal zu öffnen.
-        # Das könnte z.B. über subprocess.Popen mit einem Terminal-Emulator wie xterm, gnome-terminal oder cmd erfolgen.
-        # Alternativ könntest du auch eine einfache Terminal-Emulation in Tkinter implementieren, aber das ist deutlich aufwändiger.
+        # Hier wird ein Terminal gestartet.
         messagebox.showinfo("Externe Konsole", "Eine externe Konsole wird geöffnet. Bitte beachten Sie, dass dies von Ihrem Betriebssystem abhängt und möglicherweise nicht auf allen Systemen funktioniert.")
 
         sys_name = platform.system()
@@ -1412,7 +1410,7 @@ class NoFuSTX:
         self.help_notebook.add(self.sub_tab_bands, text=" i Bandpläne / Frequenzen ")
         self.help_notebook.add(self.sub_tab_manual, text=" ? Hilfe ")
 
-        # Hier kannst du später die Funktionen zum Füllen der Tabs aufrufen:
+        # laden der Funktionen der Doku etc.
         self.build_checklist_content(self.sub_tab_check)
         self.build_frequency_tables(self.sub_tab_bands)
         self.setup_manual_tab_content(self.sub_tab_manual)
@@ -1420,7 +1418,7 @@ class NoFuSTX:
     # --- NEU: Inhalte für den "Hilfe"-Tab mit PDF-Auswahl und externem Öffnen ---
 
     def setup_manual_tab_content(self, parent_frame):
-        # ... Dein bisheriger Container-Code ...
+        
         main_frame = ttk.Frame(parent_frame)
         main_frame.pack(expand=True, fill="both", padx=10, pady=10)
 
@@ -1441,7 +1439,7 @@ class NoFuSTX:
         self.btn_next = ttk.Button(self.page_ctrl_frame, text="Weiter ▶", command=lambda: self.change_page(1), state="disabled")
         self.btn_next.pack(side=tk.LEFT, padx=5)
 
-        # Dein Canvas-Setup (unverändert)
+        
         self.pdf_scroll = ttk.Scrollbar(self.left_info_frame, orient=tk.VERTICAL)
         self.pdf_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.pdf_canvas = tk.Canvas(self.left_info_frame, bg="gray70", yscrollcommand=self.pdf_scroll.set)
@@ -1463,7 +1461,7 @@ class NoFuSTX:
         self.current_selected_pdf = None
         self.refresh_pdf_buttons()
         
-        # Der "Extern Öffnen" Button (jetzt rechts unten)
+        # Der "Extern Öffnen" Button (rechts unten)
         self.btn_open_extern = ttk.Button(self.right_button_frame, text="Dokument extern öffnen", 
                                         command=self.open_current_pdf, state="disabled")
         self.btn_open_extern.pack(side=tk.BOTTOM, pady=20, ipadx=10, ipady=5)
@@ -1617,7 +1615,7 @@ class NoFuSTX:
             parent_notebook.add(tab_frame, text=f" {band['name']} ")
             
             # 2. Grafik zeichnen (deine bestehende Funktion)
-            # Wir übergeben die Segmente direkt aus der JSON
+            # Übergeben der Segmente direkt aus der JSON
             self.draw_band_diagram(tab_frame, band.get("segments", []))
             
             # 3. Kommentare/Infotext hinzufügen (falls vorhanden)
@@ -1636,7 +1634,7 @@ class NoFuSTX:
         canvas = tk.Canvas(parent, height=60, bg="white", highlightthickness=1, relief="sunken")
         canvas.pack(fill="x", padx=10, pady=5)
 
-        # Wir berechnen die Breite dynamisch
+        # Berechnen der Breite, dynamisch
         def update_width(event):
             canvas.delete("all")
             w = event.width
@@ -2034,7 +2032,7 @@ class NoFuSTX:
         win.title("Hardware Konfiguration")
         win.geometry("800x700")
         try:
-            # Wir nehmen ein technisches Icon, z.B. das Zahnrad/Wetterstation-Symbol
+            
             conf_icon = tk.PhotoImage(file="icons/settings.png") 
             win.iconphoto(False, conf_icon)
             # Referenz speichern, damit das Icon im Speicher bleibt
