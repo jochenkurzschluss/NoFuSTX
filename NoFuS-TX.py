@@ -16,7 +16,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 # =============================================================================
 # =============================================================================
-# NoFuSTX - IMPORT SEKTION (v1.9.15b)
+# NoFuS-TX - IMPORT SEKTION (v1.9.15b)
 # Unterstützt: APRS, JS8Call, VARA, Winlink, MT63, RTTY, SSTV, FAX, AX.25
 # Plattformen: Windows, Linux, macOS
 # =============================================================================
@@ -33,7 +33,7 @@ if os.path.exists(libs_path):
     # Wir schieben unseren libs-Ordner an Position 0 der Suchliste
     sys.path.insert(0, libs_path)
     # Debug-Ausgabe in der Konsole
-    print(f"[*] NoFuSTX Portable-Modus: Nutze lokale Libs aus {libs_path}")
+    print(f"[*] NoFuS-TX Portable-Modus: Nutze lokale Libs aus {libs_path}")
 # -------------------------------
 
 import datetime
@@ -54,6 +54,7 @@ from tkinter import ttk, messagebox
 
 try:
     import tkintermapview   # Die Karten-Engine
+    from tkintermapview.offline_loading import OfflineLoader
 except ImportError:
     tkintermapview = None
 
@@ -133,7 +134,7 @@ import glob
 # except ImportError:
 #     pymt63 = None
 # =============================================================================
-
+import sqlite3
 def check_dependencies():
     missing = []
 
@@ -142,7 +143,6 @@ def check_dependencies():
         missing.append("tkintermapview")
     if Image is None or ImageTk is None:
         missing.append("Pillow")
-
     # optionale Funkmodule
     if aprslib is None:
         missing.append("aprslib")
@@ -164,7 +164,6 @@ def check_dependencies():
     #     missing.append("pymt63")
 
     # ... (Rest der Funktion bleibt gleich)
-
     if missing:
         install_cmd = "python -m pip install " + " ".join(
             m.replace(" + ", " ").split()[0] for m in missing
@@ -177,9 +176,9 @@ def check_dependencies():
             + "\n\n(Die App kann auch ohne diese Pakete starten, aber bestimmte Funktionen sind dann deaktiviert.)"
         )
         try:
-            # Anstatt Messagebox ein kopierbares Textfeld öffnen !!! Liegt aber hinter dem Hauptfenster.
+            # Anstatt Messagebox ein kopierbares Textfeld öffnen !!!
             win = tk.Toplevel()
-            win.title("NoFuSTX: fehlende Abhängigkeiten")
+            win.title("NoFuS-TX: fehlende Abhängigkeiten")
             win.geometry("500x300")
 
             text = tk.Text(win, wrap="word", height=12, padx=10, pady=10, bg="lightgray", fg="black", font=("Arial", 10))
@@ -190,15 +189,12 @@ def check_dependencies():
             button.pack()
         except Exception:
             print(msg)
-
-
-
 class NoFuSTX:
     def __init__(self, root):
         self.root = root
-        self.root.title("NoFuSTX - Einsatzleitsoftware v1.9.15b")
+        self.root.title("NoFuS-TX - Einsatzleitsoftware v1.9.15b")
         try:
-            # Programm-Icon
+            # Wir laden das PNG als PhotoImage
             icon_img = tk.PhotoImage(file="icons/NoFuSTX.png")
             self.root.iconphoto(False, icon_img)
         except Exception as e:
@@ -291,7 +287,7 @@ class NoFuSTX:
             "MAP": {
                 "center_lat": 51.9621817,
                 "center_lon": 9.6509120,
-                "zoom": 10, # <-- bald Obsolet muss anders verarbitet werden.
+                "zoom": 10,
             },
         }
         # Vollständige Default-Frequenzen mit Beschreibungen in .jason für jede Guppe zu Ändern!
@@ -599,7 +595,7 @@ class NoFuSTX:
             f"aprs_{t_hex}_{s_hex}.gif",
         ]
 
-        # Log-Schreiben (hilft beim Debuggen)
+        # Log-Schreiben (hilft uns beim Debuggen)
         # try:
             # with open(icon_log, "a", encoding="utf-8") as f:
                 # f.write(f"{datetime.datetime.utcnow().isoformat()} - Suche: {candidates} (Original war: {symbol_table})\n")
@@ -715,10 +711,10 @@ class NoFuSTX:
         if not isinstance(packet, dict):
             return None
         
-        # Holen wir das Wetter-Unter-Dict, falls vorhanden
+        # Holen wir uns das Wetter-Unter-Dict, falls vorhanden
         wx_sub = packet.get("weather", {})
         
-        # Sammeln der Daten und nach schauen sowohl im Hauptpaket als auch im Unter-Dict nach
+        # Wir sammeln die Daten und schauen sowohl im Hauptpaket als auch im Unter-Dict nach
         # aprslib nutzt manchmal 'temperature', manchmal nur 'temp'
         temp = packet.get("temperature") or wx_sub.get("temperature") or packet.get("temp")
         hum = packet.get("humidity") or wx_sub.get("humidity") or packet.get("hum")
@@ -756,7 +752,7 @@ class NoFuSTX:
 
         try:
             # 1. Die UI-Variablen (tk.StringVar) aktualisieren
-            # Prüfen mit .get(), ob der Wert existiert, sonst "--" nutzen
+            # Wir prüfen mit .get(), ob der Wert existiert, sonst nutzen wir "--"
             
             temp = wx.get("temp")
             if temp is not None:
@@ -811,7 +807,7 @@ class NoFuSTX:
         range_km = conf.get("range_km", 20)  # Empfangsbereich in Kilometern um die HOME-Position
 
         if not call or call == "NOCALL":
-            # Ohne gültiges Rufzeichen nicht verbinden mit APRS-IS kein call check möglich, in der 3.0 umsetzen ?!
+            # Ohne gültiges Rufzeichen verbinden wir uns nicht mit APRS-IS kein call check möglich, in der 3.0 umsetzen ?!
             self.aprs_update_queue.put(
                 {
                     "type": "log",
@@ -830,7 +826,7 @@ class NoFuSTX:
                     "wx_data": wx
                 })
 
-            # 2. Position checken (bestehender alter Code)
+            # 2. Position checken (bestehender Code)
             try:
                 pos = self.extract_aprs_position(packet)
                 if pos:
@@ -1009,7 +1005,7 @@ class NoFuSTX:
 
         marker = self.aprs_markers.get(key)
         try:
-            # Alten Marker vorher löschen, falls Position sich ändert !!!
+            # Alten Marker vorher löschen, falls Position sich ändert
             if marker is not None:
                 self._remove_marker(marker)
                 del self.aprs_markers[key]
@@ -1327,10 +1323,20 @@ class NoFuSTX:
         # Hilfe-Menü
         help_m = tk.Menu(m, tearoff=0)
         m.add_cascade(label="Hilfe", menu=help_m)
-        help_m.add_command(label="Über NoFuSTX", command=self.show_about_window)      
+        help_m.add_command(label="Hilfe & Handbuch", command=self.show_manual_window)
+        help_m.add_command(label="Über NoFuS-TX", command=self.show_about_window)      
+
+    def show_manual_window(self):
+        try:
+            self.help_notebook.select(self.sub_tab_manual)
+            self.tabs.select(self.tab_help_main)
+        except Exception:       
+            messagebox.showinfo("Hilfe", "Der Hilfebereich ist derzeit nicht verfügbar.")
 
     def show_external_terminal_window(self):
-        # Hier wird ein Terminal gestartet.
+        # Hier kannst du den Code einfügen, um ein neues Fenster mit einem echten Terminal zu öffnen.
+        # Das könnte z.B. über subprocess.Popen mit einem Terminal-Emulator wie xterm, gnome-terminal oder cmd erfolgen.
+        # Alternativ könntest du auch eine einfache Terminal-Emulation in Tkinter implementieren, aber das ist deutlich aufwändiger.
         messagebox.showinfo("Externe Konsole", "Eine externe Konsole wird geöffnet. Bitte beachten Sie, dass dies von Ihrem Betriebssystem abhängt und möglicherweise nicht auf allen Systemen funktioniert.")
 
         sys_name = platform.system()
@@ -1410,7 +1416,7 @@ class NoFuSTX:
         self.help_notebook.add(self.sub_tab_bands, text=" i Bandpläne / Frequenzen ")
         self.help_notebook.add(self.sub_tab_manual, text=" ? Hilfe ")
 
-        # laden der Funktionen der Doku etc.
+        # Hier kannst du später die Funktionen zum Füllen der Tabs aufrufen:
         self.build_checklist_content(self.sub_tab_check)
         self.build_frequency_tables(self.sub_tab_bands)
         self.setup_manual_tab_content(self.sub_tab_manual)
@@ -1418,7 +1424,7 @@ class NoFuSTX:
     # --- NEU: Inhalte für den "Hilfe"-Tab mit PDF-Auswahl und externem Öffnen ---
 
     def setup_manual_tab_content(self, parent_frame):
-        
+        # ... Dein bisheriger Container-Code ...
         main_frame = ttk.Frame(parent_frame)
         main_frame.pack(expand=True, fill="both", padx=10, pady=10)
 
@@ -1439,7 +1445,7 @@ class NoFuSTX:
         self.btn_next = ttk.Button(self.page_ctrl_frame, text="Weiter ▶", command=lambda: self.change_page(1), state="disabled")
         self.btn_next.pack(side=tk.LEFT, padx=5)
 
-        
+        # Dein Canvas-Setup (unverändert)
         self.pdf_scroll = ttk.Scrollbar(self.left_info_frame, orient=tk.VERTICAL)
         self.pdf_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.pdf_canvas = tk.Canvas(self.left_info_frame, bg="gray70", yscrollcommand=self.pdf_scroll.set)
@@ -1461,7 +1467,7 @@ class NoFuSTX:
         self.current_selected_pdf = None
         self.refresh_pdf_buttons()
         
-        # Der "Extern Öffnen" Button (rechts unten)
+        # Der "Extern Öffnen" Button (jetzt rechts unten)
         self.btn_open_extern = ttk.Button(self.right_button_frame, text="Dokument extern öffnen", 
                                         command=self.open_current_pdf, state="disabled")
         self.btn_open_extern.pack(side=tk.BOTTOM, pady=20, ipadx=10, ipady=5)
@@ -1615,7 +1621,7 @@ class NoFuSTX:
             parent_notebook.add(tab_frame, text=f" {band['name']} ")
             
             # 2. Grafik zeichnen (deine bestehende Funktion)
-            # Übergeben der Segmente direkt aus der JSON
+            # Wir übergeben die Segmente direkt aus der JSON
             self.draw_band_diagram(tab_frame, band.get("segments", []))
             
             # 3. Kommentare/Infotext hinzufügen (falls vorhanden)
@@ -1634,7 +1640,7 @@ class NoFuSTX:
         canvas = tk.Canvas(parent, height=60, bg="white", highlightthickness=1, relief="sunken")
         canvas.pack(fill="x", padx=10, pady=5)
 
-        # Berechnen der Breite, dynamisch
+        # Wir berechnen die Breite dynamisch
         def update_width(event):
             canvas.delete("all")
             w = event.width
@@ -1660,43 +1666,131 @@ class NoFuSTX:
 
         canvas.bind("<Configure>", update_width)
 
-    # --- Kartenansicht mit Offline-Cache-Support ---
-    def setup_map_view(self):
-        """Initialisiert die Kartenansicht mit Offline-Cache-Support."""
-        if tkintermapview is None:
-            tk.Label(self.tab_map, text="Karte nicht verfügbar (tkintermapview fehlt)").pack(expand=1)
-            return
-
-        # 1. Pfade für die USB-Version (Relativ zum Skript)
-        map_folder = os.path.join(base_path, "off_Maps")
-        if not os.path.exists(map_folder):
+    def on_closing(self):
+        print("[System] Beende NoFuSTX...")
+        if hasattr(self, 'map_widget'):
+            # Das hier ist der "Magic Trick": Wir setzen den Pfad auf None, 
+            # was die Datenbank-Verbindung sauber schließt und flusht.
             try:
-                os.makedirs(map_folder)
+                self.map_widget.database_path = None
+                print("[Map] Datenbank sauber synchronisiert.")
             except:
                 pass
+        self.root.destroy()
+
+    def is_online(self):
+        """Prüft robust, ob eine Internetverbindung besteht."""
+        try:
+            # Wir versuchen eine IP direkt anzusprechen (DNS-Server von Google)
+            # Das vermeidet DNS-Lookup-Fehler, wenn das Netz ganz weg ist.
+            # timeout=2 sorgt dafür, dass das Programm nicht hängen bleibt.
+            socket.create_connection(("8.8.8.8", 53), timeout=2)
+            return True
+        except (socket.timeout, socket.error, OSError):
+            # Hier fangen wir [Errno -2], Timeouts und allgemeine Netzwerkfehler ab
+            return False
+
+    def setup_map_view(self):
+        """Initialisiert die Karte stabil ohne fehlerhaftes Pre-Caching."""
+        import socket
         
+        if tkintermapview is None:
+            tk.Label(self.tab_map, text="Karte nicht verfügbar").pack(expand=1)
+            return
+
+        # 1. Pfade
+        map_folder = os.path.join(base_path, "off_Maps")
+        os.makedirs(map_folder, exist_ok=True)
         db_path = os.path.join(map_folder, "offline_tiles.db")
 
-        # 2. Widget erstellen
-        self.map_widget = tkintermapview.TkinterMapView(self.tab_map, corner_radius=0)
+        # 2. Online-Check
+        online_status = False
+        try:
+            socket.create_connection(("8.8.8.8", 53), timeout=1.0)
+            online_status = True
+        except: online_status = False
+        
+        print(f"[Map] {'🌐 ONLINE' if online_status else '🔌 OFFLINE'} aktiv.")
+
+        # 3. Widget erstellen (Stabilster Weg)
+        
+        try:
+            self.map_widget = tkintermapview.TkinterMapView(
+                self.tab_map, 
+                corner_radius=0,
+                database_path=db_path,
+                use_database_only=(not online_status),
+                max_zoom=19
+            )
+        except Exception as e:
+            print(f"[Map] Fehler beim Erstellen: {e}")
+            self.map_widget = tkintermapview.TkinterMapView(self.tab_map, corner_radius=0)
+
         self.map_widget.pack(expand=1, fill="both")
 
-        # 3. Datenbank aktivieren (set_database_path ist in v1.29+ Standard)
-        if hasattr(self.map_widget, "set_database_path"):
-            try:
-                self.map_widget.set_database_path(db_path)
-                print(f"[Map] Offline-Datenbank aktiv: {db_path}")
-            except Exception as e:
-                print(f"[Map] Fehler beim DB-Zugriff: {e}")
-
-        # 4. Startposition aus Config setzen
+        # 4. Start-Position
         map_conf = self.config.get("MAP", {})
-        home_lat = map_conf.get("home_lat", 51.9621817)
-        home_lon = map_conf.get("home_lon", 9.650912)
+        lat = float(map_conf.get("home_lat", 51.9621))
+        lon = float(map_conf.get("home_lon", 9.6509))
         zoom = int(map_conf.get("zoom", 13))
 
-        self.map_widget.set_position(home_lat, home_lon)
+        self.map_widget.set_position(lat, lon)
         self.map_widget.set_zoom(zoom)
+
+        # 5. DB-Größe zur Kontrolle ausgeben
+        if os.path.exists(db_path):
+            size = os.path.getsize(db_path)
+            print(f"[Map] Status DB: {size / 1024:.1f} KB")
+            
+        # 6. Manueller Save-Button (unten rechts auf der Karte)
+        self.btn_save_map = tk.Button(
+            self.map_widget, 
+            text="Region Cachen", 
+            command=self.manual_tile_save,
+            bg="#f0f0f0",
+            fg="black",
+            font=("Arial", 9, "bold"),
+            relief="raised"
+        )
+        # Positionierung: 10 Pixel vom rechten und unteren Rand entfernt
+        self.btn_save_map.place(relx=1.0, rely=1.0, x=-10, y=-10, anchor="se")
+
+    
+
+    import threading # Sicherstellen, dass das oben importiert ist
+
+    def manual_tile_save(self):
+        """Startet den Offline-Download in einem Hintergrund-Thread."""
+        db_path = os.path.join(base_path, "off_Maps", "offline_tiles.db")
+        current_pos = self.map_widget.get_position()
+        zoom = int(self.map_widget.zoom)
+
+        def download_thread():
+            from tkintermapview import OfflineLoader
+            try:
+                loader = OfflineLoader(path=db_path)
+                
+                # Bereich definieren (ca. 5-10km Radius)
+                offset = 0.25 
+                top_left = (current_pos[0] + offset, current_pos[1] - offset)
+                bottom_right = (current_pos[0] - offset, current_pos[1] + offset)
+
+                print(f"[*] Hintergrund-Download gestartet für Zoom {zoom}...")
+                # Hier startet die Multithread-Action der Library
+                loader.save_offline_tiles(top_left, bottom_right, zoom, zoom + 6)
+                
+                print(f"[*] Download beendet. DB: {os.path.getsize(db_path)/1024/1024:.2f} MB")
+                # GUI Button wieder zurücksetzen (muss via after geschehen!)
+                self.root.after(0, lambda: self.btn_save_map.config(bg="#27ae60", text="✅ Fertig"))
+            except Exception as e:
+                print(f" Fehler im Download-Thread: {e}")
+
+        # Button auf "Beschäftigt" setzen
+        self.btn_save_map.config(bg="#f39c12", text="⏳ Lädt im Hintergrund...")
+        
+        # Den Thread starten und "daemon" machen, damit er beim Schließen der App mit stirbt
+        bg_thread = threading.Thread(target=download_thread, daemon=True)
+        bg_thread.start()
 
     def update_aprs_on_map(self):
         # dieser Button ist obsolet; APRS-Marker werden stattdessen aus den eingehenden Positionsdaten erzeugt
@@ -1767,8 +1861,7 @@ class NoFuSTX:
         # 2. Typ als Dropdown (Combobox)
         ttk.Label(dialog, text="Typ der Einheit:").pack(pady=5)
         
-        # Hier definieren wir die Liste der Fahrzeugtypen
-        # Du kannst diese Liste beliebig erweitern!
+        # Hier definieren wir die Liste der Einheiten
         fzg_typen = [
             "NoFuS-SE (Stationäre Einsatzleitung)",
             "NoFuS-S (Mobile Einsatzleitung)",
@@ -2011,14 +2104,14 @@ class NoFuSTX:
         # Die Funktion ruft sich nach 1000ms (1 Sekunde) selbst wieder auf
         self.root.after(1000, self.update_iaru_time)
 
-    # ---------- Über NoFuSTX ----------
+    # ---------- Über NoFuS-TX ----------
     def show_about_window(self):
         about_win = tk.Toplevel(self.root)
-        about_win.title("Über NoFuSTX")
+        about_win.title("Über NoFuS-TX")
         about_win.geometry("400x300")
 
-        tk.Label(about_win, text="NoFuSTX - Einsatzleitsoftware v1.9.15b").pack(pady=10)
-        tk.Label(about_win, text="© 2026 NoFuSTX DO2ITH").pack(pady=5)
+        tk.Label(about_win, text="NoFuS-TX - Einsatzleitsoftware v1.9.15b").pack(pady=10)
+        tk.Label(about_win, text="© 2026 NoFuS-TX DO2ITH").pack(pady=5)
         tk.Label(about_win, text="Alle Rechte vorbehalten.").pack(pady=10)
         tk.Label(about_win, text="E-Mail: info@ithnet.de").pack(pady=10)
         tk.Label(about_win, text="Land: Deutschland").pack(pady=10)
@@ -2032,7 +2125,7 @@ class NoFuSTX:
         win.title("Hardware Konfiguration")
         win.geometry("800x700")
         try:
-            
+            # Wir nehmen ein technisches Icon, z.B. das Zahnrad/Wetterstation-Symbol
             conf_icon = tk.PhotoImage(file="icons/settings.png") 
             win.iconphoto(False, conf_icon)
             # Referenz speichern, damit das Icon im Speicher bleibt
@@ -2345,7 +2438,7 @@ class NoFuSTX:
         # Auch in die Einsatz-Session-Datei schreiben
         self.write_session_log(f"[{ts}] {log_line}")
         self.clear_iaru_form()
-        messagebox.showinfo("NoFuSTX", "Meldung gespeichert.")
+        messagebox.showinfo("NoFuS-TX", "Meldung gespeichert.")
 
     # --- Meldung senden (in Terminal und/oder nur Loggen) ---
     def send_iaru_msg(self):
@@ -2404,7 +2497,7 @@ class NoFuSTX:
             self.print_message(full_text)
 
         self.clear_iaru_form()
-        messagebox.showinfo("NoFuSTX", "Meldung gesendet und protokolliert.")
+        messagebox.showinfo("NoFuS-TX", "Meldung gesendet und protokolliert.")
 
     # --- Log-Tab einrichten ---
     def setup_log_tab(self):
