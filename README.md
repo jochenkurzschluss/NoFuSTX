@@ -77,11 +77,15 @@ Programm starten
     python NoFuSTX_1-9-14.py
 
 Troubleshooting (häufige Situationen)
+
     - tkinter fehlt (ImportError) → Python wurde ohne Tk-Unterstützung kompiliert / du
       brauchst das OS-Paket (z.B. sudo apt install python3-tk).
+      
     - pyaudio Probleme (Build/portaudio) → installiere systemweit portaudio (apt 
       install 
+      
     - portaudio19-dev) oder nutze eine vorgefertigte Wheel-Datei.
+    
     - axlisten nicht gefunden → installiere Paket ax25-apps (Linux) oder deaktiviere
     AX.25 im Programm.
 
