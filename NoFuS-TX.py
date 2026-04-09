@@ -20,22 +20,20 @@
 # Unterstützt: APRS, JS8Call, VARA, Winlink, MT63, RTTY, SSTV, FAX, AX.25
 # Plattformen: Windows, Linux, macOS
 # =============================================================================
-
+#
 # --- 1. Python Standard-Bibliotheken (Immer vorhanden) ---
 import sys
 import os
-# --- NEU: Offline-Logik ---
 # Ermittle den Pfad, wo dieses Script liegt
 base_path = os.path.dirname(os.path.abspath(__file__))
 libs_path = os.path.join(base_path, 'libs')
-
+# Existiert der libs Ordner ? Wenn ja, schieben wir ihn an den Anfang der sys.path, damit unsere lokalen Versionen der Module Vorrang haben
 if os.path.exists(libs_path):
     # Wir schieben unseren libs-Ordner an Position 0 der Suchliste
     sys.path.insert(0, libs_path)
     # Debug-Ausgabe in der Konsole
     print(f"[*] NoFuS-TX Portable-Modus: Nutze lokale Libs aus {libs_path}")
-# -------------------------------
-
+# Jetzt können wir die Module importieren, die in libs liegen (z.B. pyjs8call, pyvara, etc.)
 import datetime
 import json
 import subprocess
@@ -46,18 +44,17 @@ import socket           # Essentiell für VARA, JS8Call, Winlink & KISS TCP
 import queue            # Thread-sichere Datenübergabe (z.B. APRS-Pakete)
 import re
 import time
-
-
+import sqlite3
+import math  # Neu: Für Kreisberechnungen (Radius)
+import glob
 # --- 2. Grafische Benutzeroberfläche & Karten (GUI) ---
 import tkinter as tk
 from tkinter import ttk, messagebox
-
 try:
     import tkintermapview   # Die Karten-Engine
     from tkintermapview.offline_loading import OfflineLoader
 except ImportError:
     tkintermapview = None
-
 try:
     from PIL import Image, ImageTk  # Bildverarbeitung für Icons und Karten
 except ImportError:
@@ -65,47 +62,38 @@ except ImportError:
     ImageTk = None
 # --- Die Terminals im OS nutzen
 from tkterminal import Terminal
-
 try:
     import tkterminal
 except ImportError:
     tkterminal = None
-
-
 # --- 3. Funk- & Modem-Schnittstellen (Externe Module) ---
 # Hinweis: Diese müssen über den check_dependencies() geprüft werden
 try:
     import aprslib      # APRS-Protokoll Dekodierung
 except ImportError:
     aprslib = None
-
 try:
     import pyjs8call    # API-Schnittstelle zu JS8Call
 except ImportError:
     pyjs8call = None
-
 try:
     import pyfldigi     # Steuerung für fldigi (MT63, RTTY, FAX, CW, uvm.)
 except ImportError:
     pyfldigi = None
-
 try:
     import serial       # pyserial für PTT/CAT-Steuerung (COM/tty-Ports)
 except ImportError:
     serial = None
-
 try:
     import pyaudio      # Soundkarten-Zugriff für SSTV & MT63 Audio
     import numpy as np  # Mathematik für Signalverarbeitung
 except ImportError:
     pyaudio = None
     np = None
-
 try:
     import pysstv       # Erzeugung von SSTV-Bildsignalen
 except ImportError:
     pysstv = None
-
 # --- 4. Netzwerk & Internet ---
 try:
     import requests         # API-Abfragen für Wetter, Gateways oder Online-Logs
@@ -117,78 +105,38 @@ try:
     import pyjs8call  # API-Schnittstelle zu JS8Call
 except ImportError:
     pyjs8call = None
-
 try:
-    import pyvara  # Für VARA-Modem
+    import pyvara  # Für VARA-Modem Klappt erst ab Python 3.11, da es die neuen Async-Funktionen nutzt # type: ignore
 except ImportError:
     pyvara = None
-
 try:
     import fitz  # Für PDF-Generierung (z.B. Einsatzberichte)
 except ImportError:
     fitz = None
 import glob
-# MT63 ist bereits über pyfldigi abgedeckt (falls du das so willst), oder füge eine separate Lib hinzu:
-# try:
-#     import pymt63  # Falls eine spezifische MT63-Bibliothek existiert
-# except ImportError:
-#     pymt63 = None
-# =============================================================================
-import sqlite3
-def check_dependencies():
-    missing = []
-
-    # GUI / Karten
-    if tkintermapview is None:
-        missing.append("tkintermapview")
-    if Image is None or ImageTk is None:
-        missing.append("Pillow")
-    # optionale Funkmodule
-    if aprslib is None:
-        missing.append("aprslib")
-    if pyjs8call is None:
-        missing.append("pyjs8call")
-    if pyfldigi is None:
-        missing.append("pyfldigi")
-    if serial is None:
-        missing.append("pyserial")
-    if pyaudio is None or np is None:
-        missing.append("pyaudio + numpy")
-    if pysstv is None:
-        missing.append("pysstv")
-    if requests is None:
-        missing.append("requests")
-    if pyvara is None:
-        missing.append("pyvara")
-    # if pymt63 is None:  # Falls du MT63 separat prüfst
-    #     missing.append("pymt63")
-
-    # ... (Rest der Funktion bleibt gleich)
-    if missing:
-        install_cmd = "python -m pip install " + " ".join(
-            m.replace(" + ", " ").split()[0] for m in missing
-        )
-        msg = (
-            "Einige optionale Abhängigkeiten fehlen:\n\n"
-            + "\n".join(f"• {m}" for m in missing)
-            + "\n\nInstallieren mit:\n\n"
-            + install_cmd
-            + "\n\n(Die App kann auch ohne diese Pakete starten, aber bestimmte Funktionen sind dann deaktiviert.)"
-        )
-        try:
-            # Anstatt Messagebox ein kopierbares Textfeld öffnen !!!
-            win = tk.Toplevel()
-            win.title("NoFuS-TX: fehlende Abhängigkeiten")
-            win.geometry("500x300")
-
-            text = tk.Text(win, wrap="word", height=12, padx=10, pady=10, bg="lightgray", fg="black", font=("Arial", 10))
-            text.insert("1.0", msg)
-            text.pack(expand=True, fill="both")
-            
-            button = tk.Button(win, text="Schließen", command=win.destroy, bg="lightgray", fg="black", font=("Arial", 10))
-            button.pack()
-        except Exception:
-            print(msg)
+'''
+try:
+     import pymt63  # Falls eine spezifische MT63-Bibliothek existiert
+except ImportError:
+     pymt63 = None
+'''
+try:
+    import ax25
+except ImportError:
+    ax25 = None
+try:
+    import ax25.netrom
+except ImportError:
+    ax25 = None
+try:
+    import ax25.ports
+except ImportError:
+    ax25 = None
+try:
+    import ax25.socket
+except ImportError:
+    ax25 = None
+# Hauptklasse der Anwendung
 class NoFuSTX:
     def __init__(self, root):
         self.root = root
@@ -289,6 +237,10 @@ class NoFuSTX:
                 "center_lon": 9.6509120,
                 "zoom": 10,
             },
+            # Abhängigkeiten: Hier kann später den Status der optionalen Module speichern, damit die App nicht jedes Mal neu prüfen muss (z.B. nach einem fehlgeschlagenen Start)
+            "DEPENDENCIES": {
+                "is_read": 0,
+            }
         }
         # Vollständige Default-Frequenzen mit Beschreibungen in .jason für jede Guppe zu Ändern!
         self.default_frequencies = {
@@ -310,7 +262,10 @@ class NoFuSTX:
 
         self.load_settings()
         self.load_frequencies()
-        check_dependencies()
+        if not self.config.get("DEPENDENCIES", {}).get("is_read", 0):
+            self.check_dependencies()
+            self.config["DEPENDENCIES"]["is_read"] = 1
+            self.save_settings()
         self.setup_ui()
         self.init_session_log()
         self.init_aprs_system()
@@ -359,6 +314,66 @@ class NoFuSTX:
                     self.config["MODES"]["RTTY"]["soundcard"] = "System"
             except Exception:
                 self.config = self.default_config
+    def check_dependencies(self):
+        missing = []
+        # GUI / Karten
+        if tkintermapview is None:
+            missing.append("tkintermapview")
+        if Image is None or ImageTk is None:
+            missing.append("Pillow")
+        # optionale Funkmodule
+        if aprslib is None:
+            missing.append("aprslib")
+        if pyjs8call is None:
+            missing.append("pyjs8call")
+        if pyfldigi is None:
+            missing.append("pyfldigi")
+        if serial is None:
+            missing.append("pyserial")
+        if pyaudio is None or np is None:
+            missing.append("pyaudio + numpy")
+        if pysstv is None:
+            missing.append("pysstv")
+        if requests is None:
+            missing.append("requests")
+        if pyvara is None:
+            missing.append("pyvara")
+###############
+        #if pymt63 is None:  
+        #    missing.append("pymt63")
+###############
+        if tkterminal is None: 
+            missing.append("tkterminal")
+        if ax25 is None:  
+            missing.append("PyHam_AX25")
+        if fitz is None:
+            missing.append("PyMuPDF (fitz)")
+        if missing:
+            install_cmd = "python -m pip install " + " ".join(
+                m.replace(" + ", " ").split()[0] for m in missing
+            )
+            msg = (
+                "Einige optionale Abhängigkeiten fehlen:\n\n"
+                + "\n".join(f"• {m}" for m in missing)
+                + "\n\nInstallieren mit:\n\n"
+                + install_cmd
+                + "\n\n(Die App kann auch ohne diese Pakete starten, aber bestimmte Funktionen sind dann deaktiviert.)\n\n\n"
+                + "Achtung unter Linux ist wichtig das Sie auch Folgende Pakete benötigen:\n\nsudo apt install libasound2-dev portaudio19-dev"
+            )
+            try:
+                # Anstatt Messagebox ein kopierbares Textfeld öffnen !!!
+                win = tk.Toplevel()
+                win.title("NoFuS-TX: fehlende Abhängigkeiten")
+                win.geometry("500x300")
+
+                text = tk.Text(win, wrap="word", height=12, padx=10, pady=10, bg="lightgray", fg="black", font=("Arial", 10))
+                text.insert("1.0", msg)
+                text.pack(expand=True, fill="both")
+                
+                button = tk.Button(win, text="Schließen", command=win.destroy, bg="lightgray", fg="black", font=("Arial", 10))
+                button.pack()
+            except Exception:
+                print(msg)
     # --------- FREQUENZENLADUNG & -SPEICHERUNG ----------
     def load_frequencies(self):
         if not os.path.exists(self.frequency_file):
@@ -493,7 +508,6 @@ class NoFuSTX:
 
         # Rechtsklick-Menü für HOME-Position auf der Karte
         try:
-            # pass_coords=True sorgt dafür, dass wir (lat, lon) erhalten und nicht das Event-Objekt
             self.map_widget.add_right_click_menu_command(
                 label="Eigene Position hier setzen",
                 command=self.set_home_position_from_click,
@@ -523,7 +537,7 @@ class NoFuSTX:
             except Exception:
                 self.home_marker = None
 
-        # Empfangs-Threads starten (listen-only Weil kein Lizens checkt) – die Threads stellen Pakete in die aprs_update_queue, die wir im GUI-Thread abarbeiten
+        # Empfangs-Threads starten (listen-only Weil kein Lizens checkt) – die Threads stellen Pakete in die aprs_update_queue, die im GUI-Thread arbeitet
         modes = self.config.get("MODES", [])
 
         aprs_is_conf = modes.get("APRS_IS", {})
@@ -575,7 +589,7 @@ class NoFuSTX:
             return None
 
         # --- KORREKTUR: Nur echte APRS-Tabellen erlauben ---
-        # Falls symbol_table kein / oder \ ist, nehmen wir / als Standard.
+        # Falls symbol_table kein / oder \ ist, benutzt / als Standard.
         actual_table = symbol_table if symbol_table in ['/', '\\'] else '/'
         
         base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -594,14 +608,7 @@ class NoFuSTX:
             f"aprs_{t_hex}_{s_hex}.png",
             f"aprs_{t_hex}_{s_hex}.gif",
         ]
-
-        # Log-Schreiben (hilft uns beim Debuggen)
-        # try:
-            # with open(icon_log, "a", encoding="utf-8") as f:
-                # f.write(f"{datetime.datetime.utcnow().isoformat()} - Suche: {candidates} (Original war: {symbol_table})\n")
-        # except Exception:
-            # pass
-
+        
         for filename in candidates:
             path = os.path.join(icons_dir, filename)
             if os.path.exists(path):
@@ -711,11 +718,10 @@ class NoFuSTX:
         if not isinstance(packet, dict):
             return None
         
-        # Holen wir uns das Wetter-Unter-Dict, falls vorhanden
+        # Wetterdaten holen
         wx_sub = packet.get("weather", {})
         
-        # Wir sammeln die Daten und schauen sowohl im Hauptpaket als auch im Unter-Dict nach
-        # aprslib nutzt manchmal 'temperature', manchmal nur 'temp'
+        # Daten Sammeln
         temp = packet.get("temperature") or wx_sub.get("temperature") or packet.get("temp")
         hum = packet.get("humidity") or wx_sub.get("humidity") or packet.get("hum")
         press = packet.get("pressure") or wx_sub.get("pressure") or packet.get("press")
@@ -723,9 +729,9 @@ class NoFuSTX:
         wind_d = packet.get("wind_direction") or wx_sub.get("wind_direction")
         rain = packet.get("rain_24h") or wx_sub.get("rain_24h")
 
-        # Nur wenn mindestens ein relevanter Wert da ist, schicken wir das Event
+        # Nur wenn mindestens ein relevanter Wert da ist
         if all(v is None for v in [temp, hum, press, wind_s]):
-            # Sonderfall: Wenn nichts gefunden wurde, schauen wir kurz in den Kommentar
+            # Sonderfall: Wenn nichts gefunden wurde, prüfen kurz im Kommentar
             # Manche Stationen senden Wetter nur als Text im Kommentar
             comment = packet.get("comment", "")
             if "t" not in comment.lower(): # Grober Check
@@ -752,7 +758,7 @@ class NoFuSTX:
 
         try:
             # 1. Die UI-Variablen (tk.StringVar) aktualisieren
-            # Wir prüfen mit .get(), ob der Wert existiert, sonst nutzen wir "--"
+            # Prüfen mit .get(), ob der Wert existiert, sonst nutzen wir "--"
             
             temp = wx.get("temp")
             if temp is not None:
@@ -807,7 +813,7 @@ class NoFuSTX:
         range_km = conf.get("range_km", 20)  # Empfangsbereich in Kilometern um die HOME-Position
 
         if not call or call == "NOCALL":
-            # Ohne gültiges Rufzeichen verbinden wir uns nicht mit APRS-IS kein call check möglich, in der 3.0 umsetzen ?!
+            # Ohne gültiges Rufzeichen nicht verbinden mit APRS-IS. Kein call check möglich, in der 3.0 umsetzen ?!
             self.aprs_update_queue.put(
                 {
                     "type": "log",
@@ -914,7 +920,7 @@ class NoFuSTX:
         )
 
         # Zeilenweise Ausgabe von axlisten auswerten
-        for line in proc.stdout:
+        for line in proc.stdout: # type: ignore
             line = line.strip()
             if not line:
                 continue
@@ -965,7 +971,7 @@ class NoFuSTX:
                 if etype == "position":
                     self.handle_aprs_position_event(event)
                 elif etype == "weather": # <--- NEU
-                    self.handle_weather_event(event) # Diese Funktion füllt dein Wetter-Tab
+                    self.handle_weather_event(event) # Diese Funktion füllt den Wetter-Tab
                 elif etype == "log":
                     msg = event.get("message")
                     if msg and hasattr(self, "log_list"):
@@ -1313,12 +1319,14 @@ class NoFuSTX:
         datei_m = tk.Menu(m, tearoff=0)
         m.add_cascade(label="Datei", menu=datei_m)
         datei_m.add_command(label="Beenden", command=self.root.quit)
+        datei_m.add_command(label="Einsatz-Log drucken", command=lambda: self.print_message("\n".join(self.log_list.get(0, tk.END))))
+        datei_m.add_command(label="...Abhängigkeiten erneut Prüfen !", command=self.check_dependencies)
 
         # EINSTELLUNGEN
         settings_m = tk.Menu(m, tearoff=0)
         m.add_cascade(label="Einstellungen", menu=settings_m)
         settings_m.add_command(label="Hardware & Modi", command=self.show_config_window)
-        m.add_console = settings_m.add_command(label="Externe Konsole", command=self.show_external_terminal_window)
+        settings_m.add_command(label="Externe Konsole", command=self.show_external_terminal_window)
 
         # Hilfe-Menü
         help_m = tk.Menu(m, tearoff=0)
@@ -1334,9 +1342,7 @@ class NoFuSTX:
             messagebox.showinfo("Hilfe", "Der Hilfebereich ist derzeit nicht verfügbar.")
 
     def show_external_terminal_window(self):
-        # Hier kannst du den Code einfügen, um ein neues Fenster mit einem echten Terminal zu öffnen.
-        # Das könnte z.B. über subprocess.Popen mit einem Terminal-Emulator wie xterm, gnome-terminal oder cmd erfolgen.
-        # Alternativ könntest du auch eine einfache Terminal-Emulation in Tkinter implementieren, aber das ist deutlich aufwändiger.
+        
         messagebox.showinfo("Externe Konsole", "Eine externe Konsole wird geöffnet. Bitte beachten Sie, dass dies von Ihrem Betriebssystem abhängt und möglicherweise nicht auf allen Systemen funktioniert.")
 
         sys_name = platform.system()
@@ -1389,7 +1395,6 @@ class NoFuSTX:
             self.discl_frame.destroy()
         
         # 2. Dein funktionierendes tkterminal laden
-        from tkterminal import Terminal
         
         self.terminal = Terminal(self.term_container)
         self.terminal.pack(expand=True, fill='both')
@@ -1416,7 +1421,7 @@ class NoFuSTX:
         self.help_notebook.add(self.sub_tab_bands, text=" i Bandpläne / Frequenzen ")
         self.help_notebook.add(self.sub_tab_manual, text=" ? Hilfe ")
 
-        # Hier kannst du später die Funktionen zum Füllen der Tabs aufrufen:
+        # Funktionen die die Tabs füllen
         self.build_checklist_content(self.sub_tab_check)
         self.build_frequency_tables(self.sub_tab_bands)
         self.setup_manual_tab_content(self.sub_tab_manual)
@@ -1424,7 +1429,7 @@ class NoFuSTX:
     # --- NEU: Inhalte für den "Hilfe"-Tab mit PDF-Auswahl und externem Öffnen ---
 
     def setup_manual_tab_content(self, parent_frame):
-        # ... Dein bisheriger Container-Code ...
+        
         main_frame = ttk.Frame(parent_frame)
         main_frame.pack(expand=True, fill="both", padx=10, pady=10)
 
@@ -1445,7 +1450,7 @@ class NoFuSTX:
         self.btn_next = ttk.Button(self.page_ctrl_frame, text="Weiter ▶", command=lambda: self.change_page(1), state="disabled")
         self.btn_next.pack(side=tk.LEFT, padx=5)
 
-        # Dein Canvas-Setup (unverändert)
+        # Canvas-Setup (unverändert)
         self.pdf_scroll = ttk.Scrollbar(self.left_info_frame, orient=tk.VERTICAL)
         self.pdf_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.pdf_canvas = tk.Canvas(self.left_info_frame, bg="gray70", yscrollcommand=self.pdf_scroll.set)
@@ -1467,7 +1472,7 @@ class NoFuSTX:
         self.current_selected_pdf = None
         self.refresh_pdf_buttons()
         
-        # Der "Extern Öffnen" Button (jetzt rechts unten)
+        # Der "Extern Öffnen" Button (jetzt rechts unten!)
         self.btn_open_extern = ttk.Button(self.right_button_frame, text="Dokument extern öffnen", 
                                         command=self.open_current_pdf, state="disabled")
         self.btn_open_extern.pack(side=tk.BOTTOM, pady=20, ipadx=10, ipady=5)
@@ -1502,14 +1507,14 @@ class NoFuSTX:
 
     def display_pdf_preview(self, path, page_num=0):
         try:
-            doc = fitz.open(path)
+            doc = fitz.open(path) # type: ignore
             self.total_pages = len(doc)
             self.current_page = page_num
             
             page = doc[self.current_page]
-            pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2)) # Dein Zoom 1.2
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            self.tk_img = ImageTk.PhotoImage(img)
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2)) # Dein Zoom 1.2 # type: ignore
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples) # type: ignore
+            self.tk_img = ImageTk.PhotoImage(img) # type: ignore
             
             self.info_label.config(image=self.tk_img, text="") 
             self.pdf_canvas.config(scrollregion=(0, 0, pix.width, pix.height))
@@ -1532,11 +1537,10 @@ class NoFuSTX:
 
     def open_current_pdf(self):
         if self.current_selected_pdf:
-            import platform, subprocess
             p = self.current_selected_pdf
             try:
                 if platform.system() == "Windows":
-                    os.startfile(p)
+                    os.startfile(p) # type: ignore
                 elif platform.system() == "Darwin":
                     subprocess.Popen(["open", p])
                 else:
@@ -1620,8 +1624,8 @@ class NoFuSTX:
             tab_frame = ttk.Frame(parent_notebook)
             parent_notebook.add(tab_frame, text=f" {band['name']} ")
             
-            # 2. Grafik zeichnen (deine bestehende Funktion)
-            # Wir übergeben die Segmente direkt aus der JSON
+            # 2. Grafik zeichnen (bestehende Funktion)
+            # Übergeben der Segmente direkt aus der JSON
             self.draw_band_diagram(tab_frame, band.get("segments", []))
             
             # 3. Kommentare/Infotext hinzufügen (falls vorhanden)
@@ -1669,10 +1673,9 @@ class NoFuSTX:
     def on_closing(self):
         print("[System] Beende NoFuSTX...")
         if hasattr(self, 'map_widget'):
-            # Das hier ist der "Magic Trick": Wir setzen den Pfad auf None, 
-            # was die Datenbank-Verbindung sauber schließt und flusht.
+            
             try:
-                self.map_widget.database_path = None
+                self.map_widget.database_path = None # type: ignore
                 print("[Map] Datenbank sauber synchronisiert.")
             except:
                 pass
@@ -1681,18 +1684,14 @@ class NoFuSTX:
     def is_online(self):
         """Prüft robust, ob eine Internetverbindung besteht."""
         try:
-            # Wir versuchen eine IP direkt anzusprechen (DNS-Server von Google)
-            # Das vermeidet DNS-Lookup-Fehler, wenn das Netz ganz weg ist.
-            # timeout=2 sorgt dafür, dass das Programm nicht hängen bleibt.
+            # Test um zu sehen, ob eine Verbindung zum Internet besteht, via Google
             socket.create_connection(("8.8.8.8", 53), timeout=2)
             return True
         except (socket.timeout, socket.error, OSError):
-            # Hier fangen wir [Errno -2], Timeouts und allgemeine Netzwerkfehler ab
             return False
 
     def setup_map_view(self):
         """Initialisiert die Karte stabil ohne fehlerhaftes Pre-Caching."""
-        import socket
         
         if tkintermapview is None:
             tk.Label(self.tab_map, text="Karte nicht verfügbar").pack(expand=1)
@@ -1741,7 +1740,7 @@ class NoFuSTX:
         if os.path.exists(db_path):
             size = os.path.getsize(db_path)
             print(f"[Map] Status DB: {size / 1024:.1f} KB")
-            
+        
         # 6. Manueller Save-Button (unten rechts auf der Karte)
         self.btn_save_map = tk.Button(
             self.map_widget, 
@@ -1754,10 +1753,6 @@ class NoFuSTX:
         )
         # Positionierung: 10 Pixel vom rechten und unteren Rand entfernt
         self.btn_save_map.place(relx=1.0, rely=1.0, x=-10, y=-10, anchor="se")
-
-    
-
-    import threading # Sicherstellen, dass das oben importiert ist
 
     def manual_tile_save(self):
         """Startet den Offline-Download in einem Hintergrund-Thread."""
@@ -1794,6 +1789,7 @@ class NoFuSTX:
 
     def update_aprs_on_map(self):
         # dieser Button ist obsolet; APRS-Marker werden stattdessen aus den eingehenden Positionsdaten erzeugt
+
         pass
 
     def update_aprs_on_map_initial(self):
@@ -1803,7 +1799,6 @@ class NoFuSTX:
         """
         # Kein automatischer "Station: ..." Marker mehr
         return
-
     # ---------- FUNDUS / UNITS ----------
     def setup_fundus_tab(self):
         # Vollständiger Fundus mit Status-Umschaltung und Löschen
@@ -1861,7 +1856,7 @@ class NoFuSTX:
         # 2. Typ als Dropdown (Combobox)
         ttk.Label(dialog, text="Typ der Einheit:").pack(pady=5)
         
-        # Hier definieren wir die Liste der Einheiten
+        # Vorab Deffinition der Einheiten
         fzg_typen = [
             "NoFuS-SE (Stationäre Einsatzleitung)",
             "NoFuS-S (Mobile Einsatzleitung)",
@@ -2125,11 +2120,11 @@ class NoFuSTX:
         win.title("Hardware Konfiguration")
         win.geometry("800x700")
         try:
-            # Wir nehmen ein technisches Icon, z.B. das Zahnrad/Wetterstation-Symbol
+            # Erstmal das Wetter Icon
             conf_icon = tk.PhotoImage(file="icons/settings.png") 
             win.iconphoto(False, conf_icon)
             # Referenz speichern, damit das Icon im Speicher bleibt
-            win._icon_ref = conf_icon 
+            win._icon_ref = conf_icon # type: ignore
         except Exception as e:
             print(f"Fehler beim Laden des Konfigurations-Icons: {e}")
 
