@@ -61,11 +61,12 @@ except ImportError:
     Image = None
     ImageTk = None
 # --- Die Terminals im OS nutzen
-from tkterminal import Terminal
 try:
     import tkterminal
 except ImportError:
     tkterminal = None
+
+from tkterminal import Terminal # type: ignore
 # --- 3. Funk- & Modem-Schnittstellen (Externe Module) ---
 # Hinweis: Diese müssen über den check_dependencies() geprüft werden
 try:
@@ -148,8 +149,11 @@ class NoFuSTX:
         except Exception as e:
             print(f"Programm-Icon Fehler: {e}")
         self.root.geometry("1250x950")
-        self.config_file = "nofustx_config.json"
-        self.frequency_file = "notfunk_freqs.json"
+        self.config_folder = os.path.join(base_path, "config")
+        os.makedirs(self.config_folder, exist_ok=True)
+        self.config_file = os.path.join(self.config_folder, "nofustx_config.json")
+        self.frequency_file = os.path.join(self.config_folder, "notfunk_freqs.json")
+        self.band_plan_file = os.path.join(self.config_folder, "band_plan.json")
         self.counter_number_msg = 1
 
         # Einsatz-Session-Log (pro Programmstart eine Datei)
@@ -272,7 +276,15 @@ class NoFuSTX:
     # --------- KONFIGURATIONSLADUNG & -SPEICHERUNG ----------
     def load_settings(self):
         if not os.path.exists(self.config_file):
-            self.config = self.default_config
+            legacy_config = os.path.join(base_path, "nofustx_config.json")
+            if os.path.exists(legacy_config):
+                try:
+                    with open(legacy_config, "r") as f:
+                        self.config = json.load(f)
+                except Exception:
+                    self.config = self.default_config
+            else:
+                self.config = self.default_config
             self.save_settings()
         else:
             try:
@@ -377,7 +389,16 @@ class NoFuSTX:
     # --------- FREQUENZENLADUNG & -SPEICHERUNG ----------
     def load_frequencies(self):
         if not os.path.exists(self.frequency_file):
-            self.frequencies = self.default_frequencies
+            legacy_frequencies = os.path.join(base_path, "notfunk_freqs.json")
+            if os.path.exists(legacy_frequencies):
+                try:
+                    with open(legacy_frequencies, "r") as f:
+                        self.frequencies = json.load(f)
+                except Exception:
+                    self.frequencies = self.default_frequencies
+            else:
+                self.frequencies = self.default_frequencies
+            os.makedirs(self.config_folder, exist_ok=True)
             with open(self.frequency_file, "w") as f:
                 json.dump(self.frequencies, f, indent=4)
         else:
@@ -388,6 +409,7 @@ class NoFuSTX:
                 self.frequencies = self.default_frequencies
 
     def save_settings(self):
+        os.makedirs(self.config_folder, exist_ok=True)
         with open(self.config_file, "w") as f:
             json.dump(self.config, f, indent=4)
 
@@ -555,6 +577,7 @@ class NoFuSTX:
 
         # Queue im GUI-Thread regelmäßig abarbeiten
         self.root.after(500, self.process_aprs_queue)
+        
 
     # ---------- APRS HILFSFUNKTIONEN ----------
     def get_home_image(self):
@@ -1219,6 +1242,8 @@ class NoFuSTX:
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
         self.time_label = tk.Label(self.status_bar, text="", font=("Courier", 10, "bold"))
         self.time_label.pack(side=tk.RIGHT, padx=10)
+        self.zoom_label = tk.Label(self.status_bar, text="", font=("Courier", 10))
+        self.zoom_label.pack(side=tk.LEFT, padx=10)
         self.update_clock()
 
         self.tabs = ttk.Notebook(self.root)
@@ -1256,7 +1281,7 @@ class NoFuSTX:
 
         # Wenn APRS-IS konfiguriert ist, beim Start automatisch Marker setzen
         self.update_aprs_on_map_initial()
-
+        self.get_current_map_zoom()
     
     def setup_weather_tab(self):
         # Einfacher Platzhalter-Text, damit der Tab nicht leer ist
@@ -1309,6 +1334,7 @@ class NoFuSTX:
         # Einfacher Platzhalter-Text, damit der Tab nicht leer ist
         label = tk.Label(self.tab_sdr, text="SDR-Funktionen werden hier integriert.", font=("Arial", 12))
         label.pack(pady=20)
+
     
     # --------- UI-GRUNDSTRUKTUR & -ELEMENTE & Menü ----------
     def setup_menu(self):
@@ -1512,7 +1538,7 @@ class NoFuSTX:
             self.current_page = page_num
             
             page = doc[self.current_page]
-            pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2)) # Dein Zoom 1.2 # type: ignore
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2)) # Zoom 1.2 # type: ignore
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples) # type: ignore
             self.tk_img = ImageTk.PhotoImage(img) # type: ignore
             
@@ -1616,7 +1642,13 @@ class NoFuSTX:
     # --- NEU: Dynamisches Laden der Bandpläne aus JSON und grafische Darstellung ---
     def load_and_build_bandplans(self, parent_notebook):
         # Datei laden (Fehlerbehandlung mit try/except wäre gut)
-        with open("band_plan.json", "r", encoding="utf-8") as f:
+        band_plan_path = self.band_plan_file
+        if not os.path.exists(band_plan_path):
+            legacy_band_plan = os.path.join(base_path, "band_plan.json")
+            if os.path.exists(legacy_band_plan):
+                band_plan_path = legacy_band_plan
+
+        with open(band_plan_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         
         for band in data.get("BANDS", []):
@@ -1753,7 +1785,8 @@ class NoFuSTX:
         )
         # Positionierung: 10 Pixel vom rechten und unteren Rand entfernt
         self.btn_save_map.place(relx=1.0, rely=1.0, x=-10, y=-10, anchor="se")
-
+        
+        
     def manual_tile_save(self):
         """Startet den Offline-Download in einem Hintergrund-Thread."""
         db_path = os.path.join(base_path, "off_Maps", "offline_tiles.db")
@@ -2224,21 +2257,21 @@ class NoFuSTX:
         self.ax_scroll_f = ttk.Frame(ax_f)
         self.ax_scroll_f.pack(fill="both", expand=True)
         self.ax_temp_list = []
+        self.ax_port_data = [dict(port) for port in self.config.get("MODES", {}).get("AX25_PORTS", [])]
 
         def render_ax_ports():
             for w in self.ax_scroll_f.winfo_children():
                 w.destroy()
             self.ax_temp_list = []
 
-            
-            for i, port in enumerate(self.config["MODES"]["AX25_PORTS"]):
-                p_frame = ttk.LabelFrame(self.ax_scroll_f, text=f"AX.25 Port #{i}")
+            for i, port in enumerate(self.ax_port_data):
+                p_frame = ttk.LabelFrame(self.ax_scroll_f, text=f"AX.25 Port #{i+1}")
                 p_frame.pack(fill="x", padx=10, pady=2)
 
                 v = tk.BooleanVar(value=port.get("active", False))
                 tk.Checkbutton(p_frame, text="Aktiv", variable=v).grid(row=0, column=0)
 
-                dev = ttk.Combobox(p_frame, values=self.options["AX25_DEVICES"], width=8)
+                dev = ttk.Combobox(p_frame, values=self.options.get("AX25_DEVICES", []), width=8)
                 dev.set(port.get("device", "ax0"))
                 dev.grid(row=0, column=1, padx=5)
 
@@ -2250,33 +2283,36 @@ class NoFuSTX:
                 call.insert(0, port.get("call", "NOCALL"))
                 call.grid(row=0, column=3, padx=5)
 
-                btn_del = ttk.Button(p_frame, text="X", width=3, 
-                                     command=lambda idx=i: dummy(idx))
+                btn_del = ttk.Button(
+                    p_frame,
+                    text="X",
+                    width=3,
+                    command=lambda idx=i: remove_ax_port(idx),
+                )
                 btn_del.grid(row=0, column=4, padx=5)
 
                 self.ax_temp_list.append(
                     {"active": v, "device": dev, "nickname": nick, "call": call}
                 )
-        render_ax_ports()
 
-        # --- Button zum Hinzufügen eines neuen Ports
         def add_ax_port():
-            dialog_ax_add = tk.Toplevel(self.root)
-            dialog_ax_add.title("Neuen AX.25 Port hinzufügen")
-            dialog_ax_add.geometry("300x150")
-            ttk.Label(dialog_ax_add, text="Gerät (z.B. ax0):").pack(pady=5)
-            ttk.Label(dialog_ax_add, text="Nickname:").pack(pady=5)
-            ttk.Label(dialog_ax_add, text="call").pack(pady=5)
-
-            # self.config["MODES"]["AX25_PORTS"].append(
-            #     {"active": False, "device": "ax0", "nickname": "", "call": "NOCALL"}
-            # )
+            self.ax_port_data.append(
+                {"active": False, "device": "ax0", "nickname": "", "call": "NOCALL"}
+            )
             render_ax_ports()
 
-        def dummy(idx):
-            if messagebox.askyesno("Löschen", f"AX.25 Port #{idx} entfernen?"):
-                # del self.config["MODES"]["AX25_PORTS"][idx]
+        def remove_ax_port(idx):
+            if messagebox.askyesno("Löschen", f"AX.25 Port #{idx+1} entfernen?"):
+                if 0 <= idx < len(self.ax_port_data):
+                    del self.ax_port_data[idx]
                 render_ax_ports()
+
+        render_ax_ports()
+
+        add_button_frame = ttk.Frame(ax_f)
+        add_button_frame.pack(fill="x", padx=10, pady=5)
+        ttk.Button(add_button_frame, text="Neuen AX.25 Port hinzufügen", command=add_ax_port).pack(side="left")
+
         # Drucker
         pr_f = ttk.Frame(nb)
         nb.add(pr_f, text="Drucker")
@@ -2425,10 +2461,25 @@ class NoFuSTX:
                 self.digi_terminals[mode] = t
 
     # ---------- LOG ----------
+    def get_utc_now(self):
+        """Gibt die aktuelle UTC-Zeit zurück, kompatibel für ältere und neuere Python-Versionen."""
+        try:
+            return datetime.datetime.now(datetime.timezone.utc)
+        except AttributeError:
+            return datetime.datetime.utcnow()
+
+    def utc_iso_timestamp(self, dt=None):
+        dt = dt or self.get_utc_now()
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def utc_time_str(self, dt=None):
+        dt = dt or self.get_utc_now()
+        return dt.strftime("%H:%M:%S")
+
     def log_iaru_msg(self):
         nr = self.msg_fields["Nummer"].get()
-        ts = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-        log_line = f"{datetime.datetime.utcnow().strftime('%H:%M:%S')} : MSG #{nr} archiviert."
+        ts = self.utc_iso_timestamp()
+        log_line = f"{self.utc_time_str()} : MSG #{nr} archiviert."
         self.log_list.insert(0, log_line)
         # Auch in die Einsatz-Session-Datei schreiben
         self.write_session_log(f"[{ts}] {log_line}")
@@ -2468,8 +2519,8 @@ class NoFuSTX:
 
         # Immer ins Einsatz-Log und in die Einsatz-Session-Datei übernehmen
         nr = self.msg_fields["Nummer"].get()
-        time_str = datetime.datetime.utcnow().strftime("%H:%M:%S")
-        ts = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        time_str = self.utc_time_str()
+        ts = self.utc_iso_timestamp()
         if mode and mode != "Nur Log":
             log_text = f"{time_str} : MSG #{nr} gesendet über {mode}."
         else:
@@ -2501,9 +2552,22 @@ class NoFuSTX:
 
     # ---------- UHR ----------
     def update_clock(self):
-        now_utc = datetime.datetime.utcnow()
+        now_utc = self.get_utc_now()
         self.time_label.config(text=now_utc.strftime("%d.%m.%Y - %H:%M:%S UTC"))
         self.root.after(1000, self.update_clock)
+
+    # ---------- Aktueller Map Zoom ----------
+    def get_current_map_zoom(self):
+        current_tab_text = self.tabs.tab(self.tabs.select(), "text") # type: ignore
+        
+        if current_tab_text == "Lagekarte":
+            if hasattr(self, "map_widget") and self.map_widget:
+                now_zoom = int(self.map_widget.zoom)
+                self.zoom_label.config(text=f"lagekarte Aktueller Map Zoom: {now_zoom}x")
+            pass
+        else:
+            self.zoom_label.config(text=f"{current_tab_text}")
+        self.root.after(2000, self.get_current_map_zoom)  # Alle 2 Sekunden aktualisieren
 
 # ---------- MAIN ----------
 # Startet die Anwendung, indem die Hauptklasse instanziiert und die Tkinter-Hauptschleife gestartet wird.
