@@ -1,0 +1,64 @@
+{
+    "FREQUENCIES": [
+        [
+            "FM / Fonie",
+            "145.500 MHz",
+            "in Fonie zur Kommunikation der Einheiten untereinander"
+        ],
+        [
+            "FM / AFSK",
+            "144.800 MHz",
+            "APRS zur Positionsermittlung"
+        ],
+        [
+            "FM / Fonie",
+            "149.050 MHz",
+            "Freenet in Fonie zur Kommunikation der Einheiten untereinander"
+        ],
+        [
+            "FM / Fonie",
+            "446.03125 MHz",
+            "PMR in Fonie zur Kommunikation der Einheiten untereinander"
+        ],
+        [
+            "FM / Fonie",
+            "430.500 MHz",
+            "in Fonie zur Kommunikation der Einheiten untereinander"
+        ],
+        [
+            "FM / Fonie",
+            "433.500 MHz",
+            "in Fonie zur Kommunikation der Einheiten untereinander"
+        ],
+        [
+            "FM / Fonie",
+            "28.325 MHz",
+            "in Fonie zur Kommunikation der Einheiten untereinander"
+        ],
+        [
+            "FM / Fonie",
+            "27.065 MHz",
+            "CB in Fonie zur Kommunikation der Einheiten untereinander"
+        ],
+        [
+            "FM / AFSK",
+            "27.235 MHz",
+            "CB AFSK/APRS zur Positionsermittlung und Daten\u00fcbertragung"
+        ],
+        [
+            "USB / Fonie",
+            "14.300 MHz",
+            "in Fonie zur Kommunikation \u00fcber sehr gro\u00dfe Entfernungen (Grenz\u00fcbergreifend)"
+        ],
+        [
+            "LSB / Fonie",
+            "7.110 kHz",
+            "LSB in Fonie zur Kommunikation \u00fcber sehr gro\u00dfe Entfernungen (Deutschland weit)"
+        ],
+        [
+            "LSB / Fonie",
+            "3.760 kHz",
+            "LSB in Fonie zur Kommunikation \u00fcber sehr gro\u00dfe Entfernungen (Deutschland weit)"
+        ]
+    ]
+}

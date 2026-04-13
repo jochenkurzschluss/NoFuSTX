@@ -1,0 +1,128 @@
+{
+    "BANDS": [
+        {
+            "name": "160M KW",
+            "segments": [
+                [1.810, 1.838, "#FFFF66", "CW / Digital"],
+                [1.840, 2.000, "#66FF66", "SSB / Fonie"]
+            ],
+            "comments": "160m Band: 'Top Band'. Gute regionale Ausbreitung (Bodenwelle) in der Nacht."
+        },
+        {
+            "name": "80M KW",
+            "segments": [
+                [3.500, 3.570, "#FFFF66", "CW / Digital"],
+                [3.600, 3.800, "#66FF66", "SSB / Notfunk (3.760 MHz)"]
+            ],
+            "comments": "80m Band: Wichtigstes Band für regionalen Notfunk in Europa (NVIS). \nNotfunk-Aktivitätszentrum: 3.760 MHz."
+        },
+        {
+            "name": "40M KW",
+            "segments": [
+                [7.000, 7.040, "#FFFF66", "CW / Digital"],
+                [7.050, 7.200, "#66FF66", "SSB / Notfunk (7.110 MHz)"]
+            ],
+            "comments": "40m Band: Stabiles Tag-Band für Deutschland/Europa. \nNotfunk-Aktivitätszentrum: 7.110 MHz."
+        },
+        {
+            "name": "30M KW",
+            "segments": [
+                [10.100, 10.130, "#FFFF66", "CW"],
+                [10.130, 10.150, "#051469", "Digital (FT8/JS8)"]
+            ],
+            "comments": "30m Band: Nur CW und Digimodes erlaubt. Sehr stabil für Datenübertragung."
+        },
+        {
+            "name": "20M KW",
+            "segments": [
+                [14.000, 14.070, "#FFFF66", "CW / Digital"],
+                [14.100, 14.350, "#66FF66", "SSB / Globaler Notfunk"]
+            ],
+            "comments": "20m Band: Das 'DX-Band'. Weltweite Kommunikation am Tag. \nGlobaler Notruf: 14.300 MHz."
+        },
+        {
+            "name": "17M KW",
+            "segments": [
+                [18.068, 18.110, "#FFFF66", "CW / Digital"],
+                [18.110, 18.168, "#66FF66", "SSB / Fonie"]
+            ],
+            "comments": "17m Band: 'WARC-Band'. Oft sehr ruhig und störungsfrei."
+        },
+        {
+            "name": "15M KW",
+            "segments": [
+                [21.000, 21.070, "#FFFF66", "CW / Digital"],
+                [21.150, 21.450, "#66FF66", "SSB / Fonie"]
+            ],
+            "comments": "15m Band: Hervorragendes Tag-Band bei guter Sonnenaktivität."
+        },
+        {
+            "name": "12M KW",
+            "segments": [
+                [24.890, 24.915, "#FFFF66", "CW / Digital"],
+                [24.930, 24.990, "#66FF66", "SSB / Fonie"]
+            ],
+            "comments": "12m Band: Ähnlich wie 10m, oft für DX genutzt."
+        },
+        {
+            "name": "10M KW",
+            "segments": [
+                [28.000, 28.070, "#FFFF66", "CW / Digital"],
+                [28.225, 28.300, "#66CCFF", "Baken / Info"],
+                [28.320, 29.300, "#66FF66", "SSB / Fonie"],
+                [29.510, 29.700, "#0DA57F", "FM Relais"]
+            ],
+            "comments": "10m Band: Größtes KW-Band. Ermöglicht bei guten Bedingungen weltweiten Funk mit kleiner Leistung."
+        },
+        {
+            "name": "2M VHF",
+            "segments": [
+                [144.000, 144.150, "#FFFF66", "CW / SSB"],
+                [144.500, 144.793, "#66FF66", "FM / All Mode"],
+                [144.800, 144.987, "#CA004E", "APRS (144.800)"],
+                [145.200, 145.593, "#66FF66", "FM Relais / Mobil"]
+            ],
+            "comments": "2m Band: Standardband für lokalen Notfunk und Katastrophenschutz."
+        },
+        {
+            "name": "70cm UHF",
+            "segments": [
+                [430.000, 431.975, "#66CCFF", "Eingabe Relais"],
+                [433.050, 434.790, "#FFB266", "LPD Bereich (Mitnutzung)"],
+                [438.000, 439.975, "#66FF66", "Ausgabe Relais / FM"]
+            ],
+            "comments": "70cm Band: Hohe Durchdringung in Gebäuden/Städten. Viele digitale Relais (DMR/C4FM)."
+        },
+        {
+            "name": "11M CB",
+            "segments": [
+                [26.565, 26.675, "#66CCFF", "K41-51: FM/Digi"],
+                [26.675, 26.695, "#051469", "K52-53: JS8/Digi"],
+                [26.695, 26.915, "#66CCFF", "K54-75: FM"],
+                [26.915, 26.935, "#051469", "K76-77: Digi"],
+                [26.935, 26.955, "#66CCFF", "K78-80: FM"],
+                [26.955, 26.965, "grey", ""],
+                [26.965, 27.055, "#66FF66", "K1-8: FM/AM"],
+                [27.055, 27.075, "#CA004E", "K9: NOTRUF"],
+                [27.075, 27.225, "#66FF66", "K10-23: FM/AM/SSB"],
+                [27.225, 27.255, "#051469", "K24-25: Digi"],
+                [27.255, 27.405, "#66FF66", "K26-40: FM/AM/SSB"]
+            ],
+            "comments": "Spezialkanäle:\n• Kanal 9 (27.065 MHz): NOTRUF / AM-Trucker\n• Kanal 19 (27.185 MHz): Trucker Info FM\n• Kanal 24/25 (27.235/245 MHz): Digital/Daten"
+        },
+        {
+            "name": "FreeNET",
+            "segments": [
+                [149.0218, 149.1156, "#66FF66", "Freenet: Analog & Digital (K1-K12)"]
+            ],
+            "comments": "Analog (12.5 kHz) & Digital (6.25 kHz) nutzen denselben Bereich."
+        },
+        {
+            "name": "PMR",
+            "segments": [
+                [446.000, 446.200, "#66FF66", "PMR Analog/Digital"]
+            ],
+            "comments": "Hinweis: Max. 500mW ERP, fest montierte Antenne."
+        }
+    ]
+}
