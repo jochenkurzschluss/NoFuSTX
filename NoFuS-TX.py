@@ -47,6 +47,8 @@ import time
 import sqlite3
 import math  # Neu: Für Kreisberechnungen (Radius)
 import glob
+import http.server
+import socketserver
 # --- 2. Grafische Benutzeroberfläche & Karten (GUI) ---
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -154,6 +156,9 @@ class NoFuSTX:
         self.config_file = os.path.join(self.config_folder, "nofustx_config.json")
         self.frequency_file = os.path.join(self.config_folder, "notfunk_freqs.json")
         self.band_plan_file = os.path.join(self.config_folder, "band_plan.json")
+        self.msg_folder = os.path.join(base_path, "msg")
+        os.makedirs(self.msg_folder, exist_ok=True)
+        self.msg_history_entries = {}
         self.counter_number_msg = 1
 
         # Einsatz-Session-Log (pro Programmstart eine Datei)
@@ -166,6 +171,14 @@ class NoFuSTX:
         self.aprs_markers = {}
         self.aprs_icon_cache = {}
         self.home_marker = None
+        self.wx_history = []
+        self.wx_metric_history = {
+            "temp": [],
+            "hum": [],
+            "press": [],
+            "wind": [],
+            "rain": []
+        }
 
         self.options = {
             "RTTY_BPS": ["45.45", "50", "75", "100", "200"],
@@ -244,6 +257,12 @@ class NoFuSTX:
             # Abhängigkeiten: Hier kann später den Status der optionalen Module speichern, damit die App nicht jedes Mal neu prüfen muss (z.B. nach einem fehlgeschlagenen Start)
             "DEPENDENCIES": {
                 "is_read": 0,
+            },
+            "IARU": {
+                "next_message_number": 1
+            },
+            "USERCALL": {
+                "CALLSINGEN": "NOCALL"
             }
         }
         # Vollständige Default-Frequenzen mit Beschreibungen in .jason für jede Guppe zu Ändern!
@@ -266,9 +285,12 @@ class NoFuSTX:
 
         self.load_settings()
         self.load_frequencies()
+        self.counter_number_msg = self.load_message_counter()
         if not self.config.get("DEPENDENCIES", {}).get("is_read", 0):
             self.check_dependencies()
             self.config["DEPENDENCIES"]["is_read"] = 1
+            self.set_USERCALL()
+            self.show_config_window()
             self.save_settings()
         self.setup_ui()
         self.init_session_log()
@@ -324,6 +346,18 @@ class NoFuSTX:
                     and "soundcard" not in self.config["MODES"]["RTTY"]
                 ):
                     self.config["MODES"]["RTTY"]["soundcard"] = "System"
+
+                # USERCALL-Bereich sicherstellen
+                if "USERCALL" not in self.config:
+                    self.config["USERCALL"] = {"CALLSINGEN": "NOCALL"}
+                elif "CALLSINGEN" not in self.config["USERCALL"]:
+                    self.config["USERCALL"]["CALLSINGEN"] = "NOCALL"
+
+                # IARU-Zähler sicherstellen
+                if "IARU" not in self.config:
+                    self.config["IARU"] = {"next_message_number": 1}
+                elif "next_message_number" not in self.config["IARU"]:
+                    self.config["IARU"]["next_message_number"] = 1
             except Exception:
                 self.config = self.default_config
     def check_dependencies(self):
@@ -386,6 +420,128 @@ class NoFuSTX:
                 button.pack()
             except Exception:
                 print(msg)
+    # =============================================================================
+    # NoFuS-TX - LAN SYNC SEKTION (P2P Map Sharing)
+    # =============================================================================
+
+    def init_lan_sync(self, statusbar_parent):
+        """Initialisiert das UI-Widget und startet die Hintergrund-Dienste"""
+        # 1. UI Widget in der Mitte der Statusleiste
+        self.sync_frame = tk.Frame(statusbar_parent, bd=1, relief="sunken", bg="gray90")
+        self.sync_frame.pack(side="left", expand=True, padx=10) # expand=True schiebt es in die Mitte
+
+        self.sync_icon = tk.Label(self.sync_frame, text="🔵", bg="gray90")
+        self.sync_icon.pack(side="left", padx=2)
+
+        self.sync_label = tk.Label(self.sync_frame, text="LAN-Sync: Idle", font=("Arial", 8), bg="gray90")
+        self.sync_label.pack(side="left", padx=5)
+
+        # 2. Threads starten
+        threading.Thread(target=self._run_broadcast_sender, daemon=True).start()
+        threading.Thread(target=self._run_broadcast_listener, daemon=True).start()
+        threading.Thread(target=self._run_http_server, daemon=True).start()
+
+    def _get_local_tile_count(self):
+        """Zählt, wie viele Kartenkacheln wir aktuell haben"""
+        db_path = os.path.join(base_path, "offline_tiles.db")
+        if not os.path.exists(db_path): return 0
+        try:
+            conn = sqlite3.connect(db_path)
+            count = conn.execute("SELECT count(*) FROM tiles").fetchone()[0]
+            conn.close()
+            return count
+        except Exception: return 0
+
+    def _run_http_server(self):
+        """Stellt die offline_tiles.db via HTTP bereit"""
+        port = 8080
+        # Es braucht einen Handler, der nur die tiles.db ausliefert
+        os.chdir(base_path) 
+        handler = http.server.SimpleHTTPRequestHandler
+        try:
+            with socketserver.TCPServer(("", port), handler) as httpd:
+                httpd.serve_forever()
+        except Exception as e:
+            print(f"[*] LAN-Server Port belegt: {e}")
+
+    def _run_broadcast_sender(self):
+        """Kündigt alle 15 Sekunden im Netzwerk an"""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        
+        while True:
+            try:
+                my_call = self.config.get("USERCALL", {}).get("CALLSINGEN", "NOCALL")
+                info = {
+                    "app": "NoFuS-TX",
+                    "call": my_call,
+                    "tiles": self._get_local_tile_count(),
+                    "ip": socket.gethostbyname(socket.gethostname()),
+                    "port": 8080
+                }
+                msg = json.dumps(info).encode('utf-8')
+                sock.sendto(msg, ('<broadcast>', 5005))
+            except Exception: pass
+            time.sleep(15)
+
+    def _run_broadcast_listener(self):
+        """Lauscht auf andere NoFuS-Stationen"""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(('', 5005))
+        
+        while True:
+            try:
+                data, addr = sock.recvfrom(1024)
+                info = json.loads(data.decode('utf-8'))
+                
+                if info.get("app") == "NoFuS-TX":
+                    remote_call = info.get("call", "Unbekannt")
+                    remote_tiles = info.get("tiles", 0)
+                    local_tiles = self._get_local_tile_count()
+
+                    # Wenn der Partner mehr Tiles hat, zeigen wir das an!
+                    if remote_tiles > local_tiles:
+                        self.sync_icon.config(text="🟢", fg="green")
+                        self.sync_label.config(text=f"Update von {remote_call} verfügbar!")
+                    else:
+                        self.sync_icon.config(text="🔵", fg="blue")
+                        self.sync_label.config(text=f"Partner: {remote_call} (OK)")
+            except Exception: pass
+
+    def merge_tiles(self, other_db_path):
+        """Führt fremde Tiles in die eigene DB ein (INSERT OR IGNORE)"""
+        local_db = os.path.join(base_path, "offline_tiles.db")
+        try:
+            conn = sqlite3.connect(local_db)
+            conn.execute(f"ATTACH DATABASE '{other_db_path}' AS remote")
+            conn.execute("INSERT OR IGNORE INTO tiles SELECT * FROM remote.tiles")
+            conn.commit()
+            conn.execute("DETACH DATABASE remote")
+            conn.close()
+            self.update_sync_ui("idle") # type: ignore
+            messagebox.showinfo("Sync", "Karten erfolgreich abgeglichen!")
+        except Exception as e:
+            messagebox.showerror("Sync Fehler", str(e))
+
+    # --------- USERCALL SETZEN ----------
+    def set_USERCALL(self, callsign="NOCALL"):
+        usercall_win = tk.Toplevel(self.root)
+        usercall_win.title("Rufzeichen setzen - NoFuS-TX")
+        usercall_win.geometry("400x300")
+
+        tk.Label(usercall_win, text="Setzen Sie Ihr Rufzeichen").pack(pady=10)
+        entry = tk.Entry(usercall_win, font=("Arial", 14), justify="center")
+        entry.insert(0, callsign)
+        entry.pack(pady=10)
+        # --- Speichern-Funktion, die die neue Einstellung in der Config speichert und das Fenster schließt ---
+        def save_callsign():
+            new_callsign = entry.get()
+            usercall_config = self.config.setdefault("USERCALL", {})
+            usercall_config["CALLSINGEN"] = new_callsign
+            self.save_settings()
+            usercall_win.destroy()
+
+        tk.Button(usercall_win, text="Speichern", command=save_callsign).pack(pady=10)
     # --------- FREQUENZENLADUNG & -SPEICHERUNG ----------
     def load_frequencies(self):
         if not os.path.exists(self.frequency_file):
@@ -783,40 +939,125 @@ class NoFuSTX:
             # 1. Die UI-Variablen (tk.StringVar) aktualisieren
             # Prüfen mit .get(), ob der Wert existiert, sonst nutzen wir "--"
             
-            temp = wx.get("temp")
+            def parse_value(value):
+                if value is None:
+                    return None
+                try:
+                    return float(value)
+                except Exception:
+                    try:
+                        return float(str(value).replace(",", "."))
+                    except Exception:
+                        return None
+
+            temp = parse_value(wx.get("temp"))
             if temp is not None:
-                self.wx_vars["temp"].set(f"{float(temp):.1f} °C")
+                self.wx_vars["temp"].set(f"{temp:.1f} °C")
             
-            hum = wx.get("hum")
+            hum = parse_value(wx.get("hum"))
             if hum is not None:
-                self.wx_vars["hum"].set(f"{hum} %")
+                self.wx_vars["hum"].set(f"{hum:.1f} %")
                 
-            press = wx.get("press")
+            press = parse_value(wx.get("press"))
             if press is not None:
-                self.wx_vars["press"].set(f"{float(press):.1f} hPa")
+                self.wx_vars["press"].set(f"{press:.1f} hPa")
 
-            wind_s = wx.get("wind_speed")
+            wind_s = parse_value(wx.get("wind_speed"))
             if wind_s is not None:
-                # Umrechnung m/s in km/h falls nötig, aprslib liefert oft m/s
-                self.wx_vars["wind"].set(f"{float(wind_s) * 3.6:.1f} km/h")
+                self.wx_vars["wind"].set(f"{wind_s * 3.6:.1f} km/h")
 
-            rain = wx.get("rain_24h")
+            rain = parse_value(wx.get("rain_24h"))
             if rain is not None:
-                self.wx_vars["rain"].set(f"{rain} mm")
+                self.wx_vars["rain"].set(f"{rain:.1f} mm")
 
             self.wx_vars["station"].set(callsign)
+
+            # Speichere die letzten 8 empfangenen Werte pro Kennzahl
+            if temp is not None:
+                self.wx_metric_history["temp"].append(temp)
+                self.wx_metric_history["temp"] = self.wx_metric_history["temp"][-8:]
+            if hum is not None:
+                self.wx_metric_history["hum"].append(hum)
+                self.wx_metric_history["hum"] = self.wx_metric_history["hum"][-8:]
+            if press is not None:
+                self.wx_metric_history["press"].append(press)
+                self.wx_metric_history["press"] = self.wx_metric_history["press"][-8:]
+            if wind_s is not None:
+                self.wx_metric_history["wind"].append(wind_s * 3.6)
+                self.wx_metric_history["wind"] = self.wx_metric_history["wind"][-8:]
+            if rain is not None:
+                self.wx_metric_history["rain"].append(rain)
+                self.wx_metric_history["rain"] = self.wx_metric_history["rain"][-8:]
+
+            record = {}
+            if temp is not None:
+                record["temp"] = temp
+            if hum is not None:
+                record["hum"] = hum
+            if press is not None:
+                record["press"] = press
+            if wind_s is not None:
+                record["wind"] = wind_s * 3.6
+            if rain is not None:
+                record["rain"] = rain
+
+            if record:
+                self.wx_history.append(record)
+                if len(self.wx_history) > 8:
+                    self.wx_history.pop(0)
+                self.update_weather_average()
 
             # 2. Eintrag in die Listbox auf der rechten Seite
             timestamp = datetime.datetime.now().strftime("%H:%M")
             entry_text = f"{timestamp} | {callsign} | {self.wx_vars['temp'].get()}"
             self.wx_listbox.insert(0, entry_text)
 
-            # Liste auf 50 Einträge begrenzen
+            # Liste auf 50 Einträge begrenzen 
             if self.wx_listbox.size() > 50:
                 self.wx_listbox.delete(tk.END)
 
         except Exception as e:
             print(f"Fehler bei der Wetter-Anzeige: {e}")
+
+    def update_weather_average(self):
+        def avg(key):
+            values = self.wx_metric_history.get(key, [])
+            if not values:
+                return None
+            return sum(values) / len(values)
+
+        averages = {
+            "temp": avg("temp"),
+            "hum": avg("hum"),
+            "press": avg("press"),
+            "wind": avg("wind"),
+            "rain": avg("rain"),
+        }
+
+        if averages["temp"] is not None:
+            self.wx_avg_vars["temp"].set(f"{averages['temp']:.1f} °C")
+        else:
+            self.wx_avg_vars["temp"].set("-- °C")
+
+        if averages["hum"] is not None:
+            self.wx_avg_vars["hum"].set(f"{averages['hum']:.1f} %")
+        else:
+            self.wx_avg_vars["hum"].set("-- %")
+
+        if averages["press"] is not None:
+            self.wx_avg_vars["press"].set(f"{averages['press']:.1f} hPa")
+        else:
+            self.wx_avg_vars["press"].set("---- hPa")
+
+        if averages["wind"] is not None:
+            self.wx_avg_vars["wind"].set(f"{averages['wind']:.1f} km/h")
+        else:
+            self.wx_avg_vars["wind"].set("-- km/h")
+
+        if averages["rain"] is not None:
+            self.wx_avg_vars["rain"].set(f"{averages['rain']:.1f} mm")
+        else:
+            self.wx_avg_vars["rain"].set("-- mm")
 
     # ---------- APRS HINTERGRUND-THREADS ----------
     def aprs_is_worker(self):
@@ -1244,6 +1485,7 @@ class NoFuSTX:
         self.time_label.pack(side=tk.RIGHT, padx=10)
         self.zoom_label = tk.Label(self.status_bar, text="", font=("Courier", 10))
         self.zoom_label.pack(side=tk.LEFT, padx=10)
+        self.init_lan_sync(self.status_bar)
         self.update_clock()
 
         self.tabs = ttk.Notebook(self.root)
@@ -1295,9 +1537,18 @@ class NoFuSTX:
         self.wx_main_frame = ttk.Frame(self.tab_wx)
         self.wx_main_frame.pack(expand=True, fill="both", padx=10, pady=10)
 
-        # LINKER BEREICH: Aktuelle Messwerte (Großanzeige)
-        self.wx_display_frame = ttk.LabelFrame(self.wx_main_frame, text=" Aktuelle Wetterdaten (APRS-WX) ")
-        self.wx_display_frame.pack(side=tk.LEFT, expand=True, fill="both", padx=5)
+        # LINKER BEREICH: Wird horizontal geteilt in aktuelle Werte und Durchschnitt
+        self.wx_left_frame = ttk.Frame(self.wx_main_frame)
+        self.wx_left_frame.pack(side=tk.LEFT, expand=True, fill="both", padx=5)
+
+        self.wx_display_frame = ttk.LabelFrame(self.wx_left_frame, text=" Aktuelle Wetterdaten (APRS-WX) ")
+        self.wx_display_frame.pack(side=tk.TOP, expand=True, fill="both", pady=(0, 5))
+
+        self.wx_avg_frame = ttk.LabelFrame(
+            self.wx_left_frame,
+            text="Durchschnitt der letzten 8 empfangenen Messwerte"
+        )
+        self.wx_avg_frame.pack(side=tk.BOTTOM, fill="x")
 
         # Variablen für die Anzeige
         self.wx_vars = {
@@ -1323,6 +1574,26 @@ class NoFuSTX:
             tk.Label(self.wx_display_frame, text=txt, font=("Arial", 11, "bold")).grid(row=i, column=0, sticky="w", padx=10, pady=10)
             tk.Label(self.wx_display_frame, textvariable=var, font=("Arial", 11), fg="white", bg="black").grid(row=i, column=1, sticky="w", padx=10, pady=10)
 
+        self.wx_avg_vars = {
+            "temp": tk.StringVar(value="-- °C"),
+            "hum": tk.StringVar(value="-- %"),
+            "press": tk.StringVar(value="---- hPa"),
+            "wind": tk.StringVar(value="-- km/h"),
+            "rain": tk.StringVar(value="-- mm"),
+        }
+
+        avg_labels = [
+            ("Temp. 8-Mittel:", self.wx_avg_vars["temp"]),
+            ("Luftfeuchte 8-Mittel:", self.wx_avg_vars["hum"]),
+            ("Luftdruck 8-Mittel:", self.wx_avg_vars["press"]),
+            ("Windgeschw. 8-Mittel:", self.wx_avg_vars["wind"]),
+            ("Niederschlag 8-Mittel:", self.wx_avg_vars["rain"]),
+        ]
+
+        for i, (txt, var) in enumerate(avg_labels):
+            tk.Label(self.wx_avg_frame, text=txt, font=("Arial", 10, "bold")).grid(row=i, column=0, sticky="w", padx=10, pady=5)
+            tk.Label(self.wx_avg_frame, textvariable=var, font=("Arial", 10), fg="black", bg="white").grid(row=i, column=1, sticky="w", padx=10, pady=5)
+
         # RECHTER BEREICH: Liste der WX-Stationen in der Nähe
         self.wx_list_frame = ttk.LabelFrame(self.wx_main_frame, text=" Empfangene Stationen ")
         self.wx_list_frame.pack(side=tk.RIGHT, fill="y", padx=5)
@@ -1346,6 +1617,7 @@ class NoFuSTX:
         m.add_cascade(label="Datei", menu=datei_m)
         datei_m.add_command(label="Beenden", command=self.root.quit)
         datei_m.add_command(label="Einsatz-Log drucken", command=lambda: self.print_message("\n".join(self.log_list.get(0, tk.END))))
+        datei_m.add_command(label="Rufzeichen setzen", command=self.set_USERCALL)
         datei_m.add_command(label="...Abhängigkeiten erneut Prüfen !", command=self.check_dependencies)
 
         # EINSTELLUNGEN
@@ -1967,8 +2239,9 @@ class NoFuSTX:
         # Grid-Layout für den ganzen Tab aktivieren
         self.tab_msg.rowconfigure(0, weight=0)   # Kopfzeile
         self.tab_msg.rowconfigure(1, weight=0)   # Wichtigkeit
-        self.tab_msg.rowconfigure(2, weight=1)   # Meldungstext (soll wachsen)
-        self.tab_msg.rowconfigure(3, weight=0)   # Buttonzeile
+        self.tab_msg.rowconfigure(2, weight=2)   # Meldungstext (soll wachsen)
+        self.tab_msg.rowconfigure(3, weight=1)   # Verlauf
+        self.tab_msg.rowconfigure(4, weight=0)   # Buttonzeile
         self.tab_msg.columnconfigure(0, weight=1)
         
         # Kopfdaten
@@ -2036,9 +2309,43 @@ class NoFuSTX:
         text_scroll.grid(row=0, column=1, sticky="ns", padx=(0, 5), pady=5)
         self.msg_text.configure(yscrollcommand=text_scroll.set)
 
+        # Meldungsverlauf (scrollbar) oberhalb der Digimode-Buttons
+        history_f = ttk.LabelFrame(self.tab_msg, text="Meldungsverlauf")
+        history_f.grid(row=3, column=0, sticky="nsew", padx=10, pady=5)
+        history_f.rowconfigure(0, weight=1)
+        history_f.columnconfigure(0, weight=1)
+
+        self.msg_history_tree = ttk.Treeview(
+            history_f,
+            columns=("time", "nr", "prio", "direction", "summary"),
+            show="headings",
+            selectmode="browse",
+        )
+        self.msg_history_tree.heading("time", text="Zeit")
+        self.msg_history_tree.heading("nr", text="Nr.")
+        self.msg_history_tree.heading("prio", text="Wichtigkeit")
+        self.msg_history_tree.heading("direction", text="Richtung")
+        self.msg_history_tree.heading("summary", text="Kurzer Text")
+        self.msg_history_tree.column("time", width=120, anchor="w")
+        self.msg_history_tree.column("nr", width=60, anchor="center")
+        self.msg_history_tree.column("prio", width=120, anchor="w")
+        self.msg_history_tree.column("direction", width=100, anchor="w")
+        self.msg_history_tree.column("summary", width=420, anchor="w")
+        self.msg_history_tree.grid(row=0, column=0, sticky="nsew")
+
+        history_scroll = ttk.Scrollbar(
+            history_f, orient="vertical", command=self.msg_history_tree.yview
+        )
+        history_scroll.grid(row=0, column=1, sticky="ns")
+        self.msg_history_tree.configure(yscrollcommand=history_scroll.set)
+        self.msg_history_tree.bind("<Double-1>", self.on_msg_history_double_click)
+
+        self.msg_history_entries.clear()
+        self.load_message_history()
+
         # Untere Steuerleiste: Digimode-Auswahl, Druck-Option, Buttons
         control_f = ttk.Frame(self.tab_msg)
-        control_f.grid(row=3, column=0, sticky="ew", padx=10, pady=10)
+        control_f.grid(row=4, column=0, sticky="ew", padx=10, pady=10)
         for i in range(5):
             control_f.columnconfigure(i, weight=0)
         control_f.columnconfigure(2, weight=1)
@@ -2082,8 +2389,6 @@ class NoFuSTX:
     def clear_iaru_form(self):
         """Leert alle Felder des IARU-Formulars für eine neue Meldung."""
 
-        self.counter_number_msg += 1  # Nummer für die nächste Meldung erhöhen
-        # print(f"Vorbereitet für Meldung Nr. {self.counter_number_msg}.")  # Debug-Ausgabe
         # Alle Entry-Felder in der Kopfzeile leeren
         for title, field in self.msg_fields.items():
             field.delete(0, tk.END)
@@ -2476,12 +2781,209 @@ class NoFuSTX:
         dt = dt or self.get_utc_now()
         return dt.strftime("%H:%M:%S")
 
+    def ensure_msg_folder(self):
+        os.makedirs(self.msg_folder, exist_ok=True)
+
+    def load_message_counter(self):
+        self.ensure_msg_folder()
+        counter = 1
+        config_counter = self.config.get("IARU", {}).get("next_message_number")
+        if isinstance(config_counter, int) and config_counter > 0:
+            counter = config_counter
+        for path in glob.glob(os.path.join(self.msg_folder, "*.txt")):
+            m = re.search(r"MSG#?(\d+)", os.path.basename(path))
+            if m:
+                counter = max(counter, int(m.group(1)) + 1)
+
+        if "IARU" not in self.config:
+            self.config["IARU"] = {"next_message_number": counter}
+        else:
+            self.config["IARU"]["next_message_number"] = counter
+        return counter
+
+    def compose_iaru_text(self, header_lines, prio, body):
+        text_trenner = "####################### Meldungstext #######################\n\n\n"
+        return (
+            text_trenner
+            + "--- IARU-Meldung ---\n"
+            + "\n".join(header_lines)
+            + f"\nWICHTIGKEIT: {prio}\n\n{body}\n"
+        )
+
+    def sanitize_filename_part(self, part):
+        return re.sub(r"[^A-Za-z0-9_-]", "_", str(part).strip().replace(" ", "_"))
+
+    def get_message_filename(self, nr, prio, direction, timestamp):
+        prio_key = self.sanitize_filename_part(prio)
+        direction_key = self.sanitize_filename_part(direction)
+        filename = f"{timestamp}_MSG{nr}_prio-{prio_key}_{direction_key}.txt"
+        path = os.path.join(self.msg_folder, filename)
+        suffix = 1
+        while os.path.exists(path):
+            filename = f"{timestamp}_MSG{nr}_prio-{prio_key}_{direction_key}_{suffix}.txt"
+            path = os.path.join(self.msg_folder, filename)
+            suffix += 1
+        return path
+
+    def make_message_summary(self, body):
+        summary = " ".join(str(body).split())
+        return summary[:120]
+
+    def add_message_history_entry(self, direction, nr, prio, summary, file_path):
+        try:
+            time_str = datetime.datetime.utcfromtimestamp(
+                os.path.getmtime(file_path)
+            ).strftime("%H:%M:%S")
+        except Exception:
+            time_str = self.utc_time_str()
+
+        if hasattr(self, "msg_history_tree"):
+            item = self.msg_history_tree.insert(
+                "",
+                0,
+                values=(time_str, nr, prio, direction, summary),
+            )
+            self.msg_history_entries[item] = file_path
+
+    def parse_iaru_message_file(self, file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                text = f.read()
+        except Exception:
+            return None
+
+        data = {"header": {}, "body": "", "direction": "Lokal", "summary": ""}
+        lines = text.splitlines()
+        in_body = False
+        body_lines = []
+
+        for line in lines:
+            if line.startswith("####################### Meldungstext"):
+                in_body = True
+                continue
+            if in_body:
+                body_lines.append(line)
+                continue
+            if line.startswith("--- IARU-Meldung ---"):
+                continue
+            if ":" in line:
+                key, val = line.split(":", 1)
+                data["header"][key.strip()] = val.strip()
+
+        data["body"] = "\n".join(body_lines).strip()
+        data["summary"] = self.make_message_summary(data["body"])
+
+        basename = os.path.basename(file_path).lower()
+        if "recv" in basename or "empfangen" in basename:
+            data["direction"] = "Empfangen"
+        elif "sent" in basename or "gesendet" in basename or "log" in basename:
+            data["direction"] = "Gesendet"
+        else:
+            data["direction"] = "Lokal"
+
+        return data
+
+    def load_message_history(self):
+        if not hasattr(self, "msg_history_tree"):
+            return
+        self.msg_history_tree.delete(*self.msg_history_tree.get_children())
+        self.msg_history_entries.clear()
+        self.ensure_msg_folder()
+        for file_path in sorted(glob.glob(os.path.join(self.msg_folder, "*.txt")), reverse=True):
+            parsed = self.parse_iaru_message_file(file_path)
+            if not parsed:
+                continue
+            nr = parsed["header"].get("Nummer", "")
+            prio = parsed["header"].get("WICHTIGKEIT", "")
+            self.add_message_history_entry(
+                parsed["direction"], nr, prio, parsed["summary"], file_path
+            )
+
+    def load_iaru_message_from_file(self, file_path):
+        parsed = self.parse_iaru_message_file(file_path)
+        if not parsed:
+            return
+
+        for key, value in parsed["header"].items():
+            if key in self.msg_fields:
+                try:
+                    self.msg_fields[key].delete(0, tk.END)
+                    self.msg_fields[key].insert(0, value)
+                except Exception:
+                    pass
+
+        if "WICHTIGKEIT" in parsed["header"] and hasattr(self, "prio_var"):
+            self.prio_var.set(parsed["header"]["WICHTIGKEIT"])
+
+        self.msg_text.delete("1.0", tk.END)
+        self.msg_text.insert("1.0", parsed["body"])
+        self.update_word_count()
+
+    def on_msg_history_double_click(self, event):
+        selection = self.msg_history_tree.selection()
+        if not selection:
+            return
+        file_path = self.msg_history_entries.get(selection[0])
+        if file_path:
+            self.load_iaru_message_from_file(file_path)
+
+    def increment_message_counter(self):
+        self.counter_number_msg += 1
+        if "IARU" not in self.config:
+            self.config["IARU"] = {"next_message_number": self.counter_number_msg}
+        else:
+            self.config["IARU"]["next_message_number"] = self.counter_number_msg
+        self.save_settings()
+
+    def save_iaru_message_file(self, nr, prio, direction, full_text, summary):
+        self.ensure_msg_folder()
+        ts = self.get_utc_now().strftime("%Y%m%d_%H%M%S")
+        file_path = self.get_message_filename(nr, prio, direction, ts)
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(full_text)
+            os.chmod(file_path, 0o644)
+        except Exception:
+            pass
+
+        self.add_message_history_entry(direction, nr, prio, summary, file_path)
+        return file_path
+
+    def process_iaru_message(self, direction, header_lines, prio, body, nr=None):
+        full_text = self.compose_iaru_text(header_lines, prio, body)
+        if nr is None:
+            nr = self.msg_fields["Nummer"].get() if "Nummer" in self.msg_fields else str(self.counter_number_msg)
+        summary = self.make_message_summary(body)
+        file_path = self.save_iaru_message_file(nr, prio, direction, full_text, summary)
+        self.increment_message_counter()
+        return full_text, file_path
+
+    def receive_iaru_msg(self, source, header_lines, prio, body, nr=None):
+        full_text, file_path = self.process_iaru_message("Empfangen", header_lines, prio, body, nr=nr)
+        time_str = self.utc_time_str()
+        nr_display = nr if nr is not None else "?"
+        if nr_display == "?" and "Nummer" in self.msg_fields:
+            nr_display = self.msg_fields["Nummer"].get()
+        log_line = f"{time_str} : MSG #{nr_display} empfangen von {source}."
+        self.log_list.insert(0, log_line)
+        self.write_session_log(f"[{self.utc_iso_timestamp()}] {log_line}")
+        return full_text, file_path
+
     def log_iaru_msg(self):
+        header_keys = ["Nummer", "Quelle / Station", "Wort-Zähler", "Herkunft", "Zeit (UTC)", "Datum"]
+        header_lines = []
+        for key in header_keys:
+            val = self.msg_fields.get(key)
+            header_lines.append(f"{key}: {val.get().strip() if val else ''}")
+
+        prio = self.prio_var.get() if hasattr(self, "prio_var") else ""
+        body = self.msg_text.get("1.0", "end").strip()
+
+        full_text, file_path = self.process_iaru_message("Lokal", header_lines, prio, body)
         nr = self.msg_fields["Nummer"].get()
         ts = self.utc_iso_timestamp()
         log_line = f"{self.utc_time_str()} : MSG #{nr} archiviert."
         self.log_list.insert(0, log_line)
-        # Auch in die Einsatz-Session-Datei schreiben
         self.write_session_log(f"[{ts}] {log_line}")
         self.clear_iaru_form()
         messagebox.showinfo("NoFuS-TX", "Meldung gespeichert.")
@@ -2498,12 +3000,11 @@ class NoFuSTX:
         prio = self.prio_var.get() if hasattr(self, "prio_var") else ""
         body = self.msg_text.get("1.0", "end").strip()
 
-        text_trenner = "####################### Meldungstext #######################\n \n \n"
-
-        full_text = text_trenner + "--- IARU-Meldung ---\n" + "\n".join(header_lines) + f"\nWICHTIGKEIT: {prio}\n\n{body}\n"
-
         # Gewählten Digimode ermitteln
         mode = self.send_mode_var.get() if hasattr(self, "send_mode_var") else "Nur Log"
+        direction = mode if mode and mode != "Nur Log" else "Lokal"
+
+        full_text, file_path = self.process_iaru_message(direction, header_lines, prio, body)
 
         if mode and mode != "Nur Log":
             term = getattr(self, "digi_terminals", {}).get(mode)
