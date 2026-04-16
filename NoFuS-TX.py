@@ -1000,7 +1000,7 @@ class NoFuSTX:
                 record["wind"] = wind_s * 3.6
             if rain is not None:
                 record["rain"] = rain
-
+    
             if record:
                 self.wx_history.append(record)
                 if len(self.wx_history) > 8:
