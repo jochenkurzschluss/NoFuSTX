@@ -24,6 +24,7 @@
 # --- 1. Python Standard-Bibliotheken (Immer vorhanden) ---
 import sys
 import os
+import signal
 # Ermittle den Pfad, wo dieses Script liegt
 base_path = os.path.dirname(os.path.abspath(__file__))
 libs_path = os.path.join(base_path, 'libs')
@@ -263,23 +264,30 @@ class NoFuSTX:
             },
             "USERCALL": {
                 "CALLSINGEN": "NOCALL"
+            },
+            "SDR":{
+                "active": False,
+                "sdr_mode": "none",  # z.B. "rtl_sdr", "gqrx", "sdrplay"
+                "sdr_rate": "2400k",
+                "audio_rate_sdr": "48k",
+                "audio_rate_aplay": "48000"
             }
         }
         # Vollständige Default-Frequenzen mit Beschreibungen in .jason für jede Guppe zu Ändern!
         self.default_frequencies = {
             "FREQUENCIES": [
-                ["FM / Fonie", "145.500 MHz", "in Fonie zur Kommunikation der Einheiten untereinander"],
-                ["FM / AFSK","144.800 MHz", "APRS zur Positionsermittlung"],
-                ["FM / Fonie","149.050 MHz", "Freenet in Fonie zur Kommunikation der Einheiten untereinander"],
-                ["FM / Fonie","446.03125 MHz", "PMR in Fonie zur Kommunikation der Einheiten untereinander"],
-                ["FM / Fonie","430.500 MHz", "in Fonie zur Kommunikation der Einheiten untereinander"],
-                ["FM / Fonie","433.500 MHz", "in Fonie zur Kommunikation der Einheiten untereinander"],
-                ["FM / Fonie","28.325 MHz", "in Fonie zur Kommunikation der Einheiten untereinander"],
-                ["FM / Fonie","27.065 MHz", "CB in Fonie zur Kommunikation der Einheiten untereinander"],
-                ["FM / AFSK","27.235 MHz", "CB AFSK/APRS zur Positionsermittlung und Datenübertragung"],
-                ["USB / Fonie","14.300 MHz", "in Fonie zur Kommunikation über sehr große Entfernungen (Grenzübergreifend)"],
-                ["LSB / Fonie","7.110 kHz", "LSB in Fonie zur Kommunikation über sehr große Entfernungen (Deutschland weit)"],
-                ["LSB / Fonie","3.760 kHz", "LSB in Fonie zur Kommunikation über sehr große Entfernungen (Deutschland weit)"],
+                ["FM", "145.500 MHz", "in Fonie zur Kommunikation der Einheiten untereinander"],
+                ["FM","144.800 MHz", "APRS zur Positionsermittlung"],
+                ["FM","149.050 MHz", "Freenet in Fonie zur Kommunikation der Einheiten untereinander"],
+                ["FM","446.03125 MHz", "PMR in Fonie zur Kommunikation der Einheiten untereinander"],
+                ["FM","430.500 MHz", "in Fonie zur Kommunikation der Einheiten untereinander"],
+                ["FM","433.500 MHz", "in Fonie zur Kommunikation der Einheiten untereinander"],
+                ["FM","28.325 MHz", "in Fonie zur Kommunikation der Einheiten untereinander"],
+                ["FM","27.065 MHz", "CB in Fonie zur Kommunikation der Einheiten untereinander"],
+                ["FM","27.235 MHz", "CB AFSK/APRS zur Positionsermittlung und Datenübertragung"],
+                ["USB","14.300 MHz", "in Fonie zur Kommunikation über sehr große Entfernungen (Grenzübergreifend)"],
+                ["LSB","7.110 kHz", "LSB in Fonie zur Kommunikation über sehr große Entfernungen (Deutschland weit)"],
+                ["LSB","3.760 kHz", "LSB in Fonie zur Kommunikation über sehr große Entfernungen (Deutschland weit)"],
                 ]
         }
 
@@ -358,6 +366,14 @@ class NoFuSTX:
                     self.config["IARU"] = {"next_message_number": 1}
                 elif "next_message_number" not in self.config["IARU"]:
                     self.config["IARU"]["next_message_number"] = 1
+
+                # SDR-Bereich sicherstellen
+                if "SDR" not in self.config:
+                    self.config["SDR"] = self.default_config["SDR"]
+                else:
+                    for key, value in self.default_config["SDR"].items():
+                        if key not in self.config["SDR"]:
+                            self.config["SDR"][key] = value
             except Exception:
                 self.config = self.default_config
     def check_dependencies(self):
@@ -662,6 +678,8 @@ class NoFuSTX:
         Wird beim Schließen des Hauptfensters aufgerufen.
         Sorgt dafür, dass das Einsatz-Session-Log sauber abgeschlossen wird.
         """
+        self.on_closing()  # Alle laufenden Prozesse beenden
+        self.stop_direct_sdr() # Falls der direkte SDR-Modus aktiv ist, beendet den Prozess
         self.finalize_session_log()
         self.root.destroy()
 
@@ -1517,7 +1535,11 @@ class NoFuSTX:
         self.setup_weather_tab()
         self.setup_digimode_terminals()
         self.setup_help_and_info_tabs()
-        self.setup_sdr_tab()
+        if self.chk_sdr() == False:
+            self.setup_sdr_tab()
+        else:
+            self.no_sdr_found()
+
         self.setup_os_terminal_tab()
         self.setup_log_tab()
 
@@ -1525,6 +1547,9 @@ class NoFuSTX:
         self.update_aprs_on_map_initial()
         self.get_current_map_zoom()
     
+    def no_sdr_found(self):
+        label = tk.Label(self.tab_sdr, text="Kein SDR gefunden. Bitte überprüfen Sie die Verbindung und die Treiber.\nNach Anschluss oder geladenem Treiber Starten Sie das Programm erneut!", font=("Arial", 12), fg="red")
+        label.pack(pady=20)
     def setup_weather_tab(self):
         # Einfacher Platzhalter-Text, damit der Tab nicht leer ist
         label = tk.Label(self.tab_wx, text="Wetterinformationen werden hier angezeigt.", font=("Arial", 12))
@@ -1601,12 +1626,231 @@ class NoFuSTX:
         self.wx_listbox = tk.Listbox(self.wx_list_frame, width=30, font=("Courier", 10))
         self.wx_listbox.pack(expand=True, fill="both", padx=5, pady=5)
 
-    def setup_sdr_tab(self):
-        # Einfacher Platzhalter-Text, damit der Tab nicht leer ist
-        label = tk.Label(self.tab_sdr, text="SDR-Funktionen werden hier integriert.", font=("Arial", 12))
-        label.pack(pady=20)
 
+    # --- SDR ---
+    def chk_sdr(self):
+        No_sdr = False
+        print("Prüfe Anwesenheit von SDRs...\n")
+
+        if sys.platform == "linux":
+            cmd = "lsusb | grep -i rtl"
+        elif sys.platform == "win32":
+            cmd = 'powershell "Get-PnpDevice | Where-Object {$_.FriendlyName -like \'*RTL*\'}"'
+        elif sys.platform == "darwin":  # Mac
+            cmd = "system_profiler SPUSBDataType | grep -A 5 -B 5 RTL"
+        else:
+            print("Unbekannte Plattform")
+            sys.exit(1)
+
+        try:
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            if result.returncode == 0 and result.stdout.strip():
+                print("SDR gefunden:\n" + result.stdout)
+                No_sdr = False
+            else:
+                print("Kein SDR gefunden")
+                if self.config.get("SDR", {}).get("active", True):
+                    messagebox.showwarning("SDR Check", "Kein SDR gefunden. Bitte überprüfen Sie die Verbindung und die Treiber.")  
+                No_sdr = True
+        except Exception as e:
+            print(f"Fehler: {e}")
+            No_sdr = False
+        return No_sdr
+
+    def parse_to_hz(self, freq_str):
+        """Wandelt '145.500 MHz' oder '3.760 kHz' in Hertz (int) um."""
+        try:
+            # Leerzeichen säubern und splitten (z.B. ["145.500", "MHz"])
+            parts = freq_str.replace(",", ".").split()
+            if len(parts) < 2: return 0
+            
+            value = float(parts[0])
+            unit = parts[1].upper()
+
+            if "MHZ" in unit:
+                return int(value * 1_000_000)
+            elif "KHZ" in unit:
+                return int(value * 1_000)
+            else:
+                return int(value)
+        except Exception as e:
+            print(f"Fehler beim Parsen der Frequenz {freq_str}: {e}")
+            return 0
+
+    def sdr_remote_cmd(self, command):
+        """Sendet Befehle an Gqrx via TCP (Port 7356)"""
+        def _socket_task():
+            host = "127.0.0.1"
+            port = 7356
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(1.0)
+                    s.connect((host, port))
+                    s.sendall(f"{command}\n".encode())
+            except Exception as e:
+                print(f"SDR-Verbindungsfehler: {e}")
+
+        threading.Thread(target=_socket_task, daemon=True).start()
+
+    def apply_sdr_settings(self, freq, mode):
+        """Sendet Frequenz und Modus an Gqrx und aktualisiert die UI-Felder"""
+        sdr_backend = self.config.get("SDR", {}).get("sdr_mode", "")
+        # print(f"SDR Backend: {sdr_backend}") #Debug ausgabe
+        # Befehle an Gqrx senden
+        if sdr_backend == "gqrx":
+            # Der Weg über das Netzwerk-Protokoll
+            self.sdr_remote_cmd(f"F {freq}")
+            self.sdr_remote_cmd(f"M {mode}")
     
+        elif sdr_backend == "rtl_sdr":
+            # Der Weg direkt über die Kommandozeile
+            self.start_direct_sdr(freq, mode)
+        
+        
+        # UI-Elemente im SDR-Tab synchronisieren (falls vorhanden)
+        if hasattr(self, 'sdr_freq_var'):
+            self.sdr_freq_var.set(str(freq))
+        if hasattr(self, 'sdr_mode_var'):
+            self.sdr_mode_var.set(mode)
+    
+    def start_direct_sdr(self, freq, mode):
+        self.stop_direct_sdr()
+
+        # Hardware-Parameter
+        sdr_rate = self.config.get("SDR", {}).get("sdr_rate", "2400k")
+        audio_rate_sdr = self.config.get("SDR", {}).get("audio_rate_sdr", "48k")
+        audio_rate_aplay = self.config.get("SDR", {}).get("audio_rate_aplay", "48000")
+
+        # Mapping der Modi (AM, FM, etc.)
+        mode_map = {"FM": "fm", "WFM": "wfm", "AM": "am", "LSB": "lsb", "USB": "usb"}
+        m = mode_map.get(mode, "fm")
+
+        # Der Befehl mit DC-Removal und De-Emphasis
+        # -E dc: Entfernt den Mittenspike
+        # -E deemp: Macht den Sound angenehmer (weniger Rauschen)
+        # -l 0: Squelch aus (Rauschen hörbar)
+        if self.deemp_var.get() == True:
+            cmd = (f"rtl_fm -M {m} -f {freq} -s {sdr_rate} -r {audio_rate_sdr} -g 49 -E dc -E deemp -l 0 |"
+               f"ffplay -nodisp -autoexit -loglevel quiet -f s16le -ar {audio_rate_aplay} -ac 1 -i pipe:0")
+        else:
+            cmd = (f"rtl_fm -M {m} -f {freq} -s {sdr_rate} -r {audio_rate_sdr} -g 49 -E dc -l 0 |"
+               f"ffplay -nodisp -autoexit -loglevel quiet -f s16le -ar {audio_rate_aplay} -ac 1 -i pipe:0")
+
+        def _run():
+            # Startet den Prozess in einer neuen Session, damit wir ihn sauber killen können
+            self.sdr_process = subprocess.Popen(cmd, shell=True, preexec_fn=os.setsid, stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            print(f"SDR DIREKT AKTIV: {freq} Hz | Mode: {m} | DC-Filter: AN")
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def stop_direct_sdr(self):
+        if hasattr(self, 'sdr_process') and self.sdr_process:
+            # Beendet die ganze Prozess-Gruppe (rtl_fm UND aplay)
+            os.killpg(os.getpgid(self.sdr_process.pid), signal.SIGTERM)
+            self.sdr_process = None
+
+    def setup_sdr_tab(self):
+        # 1. Daten laden (Nutzt deine existierende Funktion)
+        #self.chk_sdr()
+        self.load_frequencies()
+        
+        # Variable für das Eingabefeld
+        self.sdr_freq_var = tk.StringVar(value="145500000")
+
+        # Haupt-Container im Tab
+        sdr_container = ttk.Frame(self.tab_sdr, padding=10)
+        sdr_container.pack(fill="both", expand=True)
+
+        # --- SEKTION 1: DYNAMISCHE BUTTONS (Presets) ---
+        preset_frame = ttk.LabelFrame(sdr_container, text=" Notfunk-Presets (Default-Liste) ", padding=10)
+        preset_frame.pack(fill="x", pady=(0, 10))
+
+        # Scrollbar für die Buttons (falls es viele sind)
+        canvas = tk.Canvas(preset_frame, height=80)
+        scrollbar = ttk.Scrollbar(preset_frame, orient="horizontal", command=canvas.xview)
+        scroll_frame = ttk.Frame(canvas)
+
+        scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        canvas.configure(xscrollcommand=scrollbar.set)
+
+        canvas.pack(side="top", fill="x", expand=True)
+        scrollbar.pack(side="bottom", fill="x")
+
+        # Buttons aus deiner Liste erstellen
+        freq_list = self.frequencies.get("FREQUENCIES", [])
+        for item in freq_list:
+            mode_raw = item[0]  # "FM"
+            freq_raw = item[1]  # "145.500 MHz"
+            desc = item[2]      # "Anrufkanal..."
+            
+            hz_val = self.parse_to_hz(freq_raw)
+            if hz_val > 0:
+                btn = ttk.Button(scroll_frame, text=f"{freq_raw}\n{mode_raw}", 
+                                command=lambda f=hz_val, m=mode_raw: self.apply_sdr_settings(f, m))
+                btn.pack(side="left", padx=5, pady=5)
+
+        # --- SEKTION 2: MANUELLE STEUERUNG MIT MODI ---
+        manual_frame = ttk.LabelFrame(sdr_container, text=" Manuelle Frequenz- & Moduswahl ", padding=10)
+        manual_frame.pack(fill="x")
+
+        # Zeile für Eingabe und Dropdown
+        ctrl_row = ttk.Frame(manual_frame)
+        ctrl_row.pack(fill="x", pady=5)
+
+        # Frequenz-Eingabe (bleibt in Hz für die Technik)
+        ttk.Label(ctrl_row, text="Hz:").pack(side="left", padx=2)
+        entry = ttk.Entry(ctrl_row, textvariable=self.sdr_freq_var, width=15)
+        entry.pack(side="left", padx=5)
+
+        # Das "Schönlese"-Label für MHz
+        self.mhz_label = ttk.Label(ctrl_row, text="0.000 MHz", font=("Arial", 10, "bold"), foreground="blue")
+        self.mhz_label.pack(side="left", padx=10)
+
+        # "Beobachter"-Funktion an die Variable
+        self.sdr_freq_var.trace_add("write", self.update_mhz_display)
+
+        # Modus-Dropdown
+        ttk.Label(ctrl_row, text="Modus:").pack(side="left", padx=(10, 2))
+        self.sdr_mode_var = tk.StringVar(value="FM")
+        mode_combo = ttk.Combobox(ctrl_row, textvariable=self.sdr_mode_var, width=7, state="readonly")
+        mode_combo['values'] = ("USB", "LSB", "AM", "FM", "WFM", "CW")
+        mode_combo.pack(side="left", padx=5)
+
+        # Setzen Button (überträgt Frequenz UND Modus)
+        ttk.Button(ctrl_row, text="Anwenden", 
+                   command=lambda: self.apply_sdr_settings(self.sdr_freq_var.get(), self.sdr_mode_var.get())).pack(side="left", padx=10)
+        # print(f"SDR Backend in Config: {self.config.get('SDR', {}).get('sdr_mode', 'Nicht gesetzt')}") # Debug-Ausgabe
+        if self.config.get("SDR", {}).get("sdr_mode") == "rtl_sdr":
+            ttk.Button(ctrl_row, text="SDR stoppen", command=self.stop_direct_sdr).pack(side="left", padx=5)
+            ttk.Label(ctrl_row, text="deemp Ein / Aus").pack(side="left", padx=(20, 2))
+            self.deemp_var = tk.BooleanVar(value=True)
+            deemp_check = ttk.Checkbutton(ctrl_row, variable=self.deemp_var, command=lambda: print(f"De-Emphasis {'AN' if self.deemp_var.get() else 'AUS'} (funktioniert nur bei direktem SDR-Modus)"))
+            deemp_check.pack(side="left", padx=5)
+
+        # Enter-Taste binden (nimmt den aktuell gewählten Modus)
+        entry.bind("<Return>", lambda e: self.apply_sdr_settings(self.sdr_freq_var.get(), self.sdr_mode_var.get()))
+
+        # Grob-Tuning Slider (2m Band als Beispiel)
+        ttk.Label(manual_frame, text="Grob-Tuning (1.5 - 899 MHz):").pack(anchor="w", pady=(10, 0))
+        slider = ttk.Scale(manual_frame, from_=1500000, to=899000000, orient="horizontal",
+                           command=lambda v: self.sdr_freq_var.set(str(int(float(v)))))
+        slider.set(145500000)
+        slider.pack(fill="x", pady=5)
+
+        # Status-Hinweis
+        info_lbl = ttk.Label(sdr_container, text="ACHTUNG! Nicht jeder SDR-Stick kann den ganzen angebotenen Frequenzbereich!\nGqrx Remote (7356) muss aktiv sein.", font=("Arial", 8, "italic"))
+        info_lbl.pack(side="bottom", pady=5)
+
+    def update_mhz_display(self, *args):
+        """Rechnet Hz live in MHz um für bessere Lesbarkeit"""
+        try:
+            hz_val = float(self.sdr_freq_var.get())
+            mhz_val = hz_val / 1_000_000
+            # Zeigt es mit 3 Nachkommastellen an (z.B. 145.500)
+            self.mhz_label.config(text=f"{mhz_val:07.3f} MHz".replace(".", ","))
+        except:
+            self.mhz_label.config(text="--- MHz")
     # --------- UI-GRUNDSTRUKTUR & -ELEMENTE & Menü ----------
     def setup_menu(self):
         m = tk.Menu(self.root)
@@ -1983,7 +2227,9 @@ class NoFuSTX:
                 print("[Map] Datenbank sauber synchronisiert.")
             except:
                 pass
-        self.root.destroy()
+        
+        #self.root.destroy()
+        #self.on_close()
 
     def is_online(self):
         """Prüft robust, ob eine Internetverbindung besteht."""
@@ -2458,7 +2704,7 @@ class NoFuSTX:
         win.title("Hardware Konfiguration")
         win.geometry("800x700")
         try:
-            # Erstmal das Wetter Icon
+            # Erstmal das Icon
             conf_icon = tk.PhotoImage(file="icons/settings.png") 
             win.iconphoto(False, conf_icon)
             # Referenz speichern, damit das Icon im Speicher bleibt
@@ -2618,6 +2864,55 @@ class NoFuSTX:
         add_button_frame.pack(fill="x", padx=10, pady=5)
         ttk.Button(add_button_frame, text="Neuen AX.25 Port hinzufügen", command=add_ax_port).pack(side="left")
 
+        # --- SDR Methode
+        sdr_f = ttk.Frame(nb)
+        nb.add(sdr_f, text="SDR")
+        self.temp_entries["SDR"] = {}
+
+        ttk.Label(sdr_f, text="SDR System:").pack(pady=5)
+        v_sdr_active = tk.BooleanVar(value=self.config.get("SDR", {}).get("active", False))
+        tk.Checkbutton(sdr_f, text="SDR aktivieren", variable=v_sdr_active).pack(pady=10)
+        self.temp_entries["SDR"]["active"] = v_sdr_active
+        
+        sdr_options = ["rtl_sdr", "gqrx", "none"]
+        self.sdr_system = ttk.Combobox(sdr_f, values=sdr_options)
+        
+        tk.Label(sdr_f, text="SDR Sample Rate (Hz):").pack(pady=5)
+        sdr_rate_f = ttk.Frame(sdr_f)
+        sdr_rate_f.pack(pady=5, padx=10, fill="x")
+        sdr_rate = ttk.Entry(sdr_rate_f)
+        sdr_rate.pack(fill="x")
+        current_sdr_rate = self.config.get("SDR", {}).get("sdr_rate", "")
+        sdr_rate.insert(0, current_sdr_rate)
+        self.temp_entries["SDR"]["sdr_rate"] = sdr_rate
+
+        tk.Label(sdr_f, text="SDR Audio Rate (Hz):").pack(pady=5)
+        sdr_audio_rate_f = ttk.Frame(sdr_f)
+        sdr_audio_rate_f.pack(pady=5, padx=10, fill="x")
+        sdr_audio_rate = ttk.Entry(sdr_audio_rate_f)
+        sdr_audio_rate.pack(fill="x")
+        current_sdr_audio_rate = self.config.get("SDR", {}).get("audio_rate_sdr", "")
+        sdr_audio_rate.insert(0, current_sdr_audio_rate)
+        self.temp_entries["SDR"]["sdr_audio_rate"] = sdr_audio_rate
+        
+        tk.Label(sdr_f, text="APLAY Audio Rate (Hz):").pack(pady=5)
+        aplay_audio_f = ttk.Frame(sdr_f)
+        aplay_audio_f.pack(pady=5, padx=10, fill="x")
+        aplay_audio_rate = ttk.Entry(aplay_audio_f)
+        aplay_audio_rate.pack(fill="x")
+        current_aplay_audio_rate = self.config.get("SDR", {}).get("audio_rate_aplay", "")
+        aplay_audio_rate.insert(0, current_aplay_audio_rate)
+        self.temp_entries["SDR"]["audio_rate_aplay"] = aplay_audio_rate
+
+
+        current_sdr = self.config.get("SDR", {}).get("sdr_mode", "")
+        if current_sdr and current_sdr in sdr_options:
+            self.sdr_system.set(current_sdr)
+        elif sdr_options:
+            self.sdr_system.set(sdr_options[0])
+        self.sdr_system.pack(pady=5, padx=10, fill="x")
+        self.temp_entries["SDR"]["sdr_mode"] = self.sdr_system
+
         # Drucker
         pr_f = ttk.Frame(nb)
         nb.add(pr_f, text="Drucker")
@@ -2719,14 +3014,23 @@ class NoFuSTX:
             "name": self.prn_name.get(),
             "auto_print": self.prn_auto.get(),
         }
+        # SDR übernehmen
+        self.config["SDR"] = {
+            "active": self.temp_entries["SDR"]["active"].get(),
+            "sdr_mode": self.temp_entries["SDR"]["sdr_mode"].get(),
+            "sdr_rate": self.temp_entries["SDR"]["sdr_rate"].get(),
+            "audio_rate_sdr": self.temp_entries["SDR"]["sdr_audio_rate"].get(),
+            "audio_rate_aplay": self.temp_entries["SDR"]["audio_rate_aplay"].get(),
+        }
 
         # Modi übernehmen
         for m, entries in self.temp_entries.items():
-            self.config["MODES"][m]["active"] = entries["active"].get()
-            for k, widget in entries.items():
-                if k == "active":
-                    continue
-                self.config["MODES"][m][k] = widget.get()
+            if m in self.config["MODES"]:
+                self.config["MODES"][m]["active"] = entries["active"].get()
+                for k, widget in entries.items():
+                    if k == "active":
+                        continue
+                    self.config["MODES"][m][k] = widget.get()
 
         self.save_settings()
         self.setup_digimode_terminals()
