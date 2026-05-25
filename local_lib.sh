@@ -1,45 +1,91 @@
 #!/usr/bin/env bash
-#
-# Script by Michael Herholt DO2ITH, 19.03.2026
-#
-# Dieses Skript installiert die benötigten Python-Pakete für NoFuSTX.
-# Es legt den unterordner "libs" mit lokalen Kopien der Pakete an, damit
-# man nicht alles global installieren muss.
-#
-# Achtung: Einige Pakete (z.B. pyserial) könnten trotzdem Systemabhängigkeiten haben.
-# Bitte die Fehlermeldungen genau lesen und ggf. die benötigten Systempakete dazu 
-# installieren (z.B. python3-serial, python3-pyaudio, etc. je nach Linux-Distribution).
+set -euo pipefail
 
-# Nutzung: Einfach dieses Skript ausführen (bash local_lib.sh) und danach NoFuSTX_1-9-14.py starten.    
-PYTHON=python3
+# Script by Michael Herholt DO2ITH, 16.04.2026
+# Dieses Skript installiert die NoFuSTX-Abhängigkeiten in einen lokalen "libs"-Ordner.
+# Dadurch kann NoFuSTX portabel gestartet werden, ohne alle Pakete global zu installieren.
+#
+# Hinweis: Einige Pakete benötigen zusätzlich Systemabhängigkeiten (z.B. portaudio für pyaudio).
+# Bitte bei Bedarf die Fehlermeldungen lesen und die entsprechenden OS-Pakete nachinstallieren.
+
+PYTHON=${PYTHON:-python3}
 LIB_DIR="libs"
 
-echo "=== NoFuSTX Dependency Installer ==="
+PACKAGES=(
+  # GUI & Benutzeroberfläche
+  tkintermapview
+  tkterminal
+  customtkinter
+  Pillow
+  
+  # Funk-Modi & Schnittstellen
+  aprslib
+  pyjs8call
+  pyfldigi
+  pyserial
+  pyvara
+  
+  # Audio & Signal
+  pyaudio
+  numpy
+  pysstv
+  
+  # Netzwerk
+  requests
+  
+  # Datenverarbeitung
+  PyMuPDF
+  PyHam_AX25
+  
+  # LoRa Mesh
+  meshtastic
+  pubsub
+  
+  # Grafiken & Plots
+  matplotlib
+  contourpy
+  kiwisolver
+  cycler
+  fontTools
+  
+  # Sonstige
+  codext
+  markdown2
+  protobuf
+  psutil
+  packaging
+  darkdetect
+  click
+  charset_normalizer
+  idna
+  certifi
+  dateutil
+  geocoder
+)
 
-# 1) Check Python
-if ! command -v $PYTHON >/dev/null 2>&1; then
+echo "=== NoFuSTX Portable Dependency Installer ==="
+
+echo "Benutze Python: $PYTHON"
+if ! command -v "$PYTHON" >/dev/null 2>&1; then
   echo "Fehler: $PYTHON nicht gefunden!"
   exit 1
 fi
 
-# 2) Ordner erstellen
 mkdir -p "$LIB_DIR"
 
-# 3) Pakete installieren
-PACKAGES=(
-  tkintermapview Pillow aprslib pyjs8call 
-  pyfldigi pyserial pyaudio numpy 
-  pysstv requests pyvara
-)
-
-echo "Installiere Pakete direkt nach: $LIB_DIR"
+if ! "$PYTHON" -m pip --version >/dev/null 2>&1; then
+  echo "pip nicht gefunden. Versuche, pip zu installieren..."
+  "$PYTHON" -m ensurepip --upgrade
+fi
 
 for pkg in "${PACKAGES[@]}"; do
-  echo "--> Hole $pkg..."
-  # --upgrade sorgt dafür, dass du wirklich die neuste Version (1.29+) bekommst
-  $PYTHON -m pip install --target="./$LIB_DIR" --upgrade "$pkg"
+  echo "--> installiere $pkg in $LIB_DIR"
+  "$PYTHON" -m pip install --upgrade --target="$LIB_DIR" "$pkg"
 done
 
-# 4) __init__.py anlegen, damit libs als Package erkannt wird
-echo "=== Fertig! NoFuSTX ist nun 'Portable' ==="
-touch libs/__init__.py
+# __init__.py anlegen, damit libs als Package erkannt wird
+mkdir -p "$LIB_DIR"
+touch "$LIB_DIR/__init__.py"
+
+echo "=== Fertig! Nutze NoFuSTX mit lokalem libs-Ordner. ==="
+echo "Starte: $PYTHON main.py"
