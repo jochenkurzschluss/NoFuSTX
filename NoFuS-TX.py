@@ -3739,28 +3739,48 @@ class NoFuSTX:
             return
         
         try:
-            # 1. Text bereinigen für den Funkweg
-            # Wir ersetzen Zeilenumbrüche durch Leerzeichen und säubern Umlaute
+            import time
+            from pubsub import pub
+            
+            # 1. Text bereinigen (Damit Zeilenumbrüche die Chunks nicht verfälschen)
             clean_msg = msg.replace("\n", " ").replace("Ä", "Ae").replace("Ö", "Oe").replace("Ü", "Ue")
             clean_msg = clean_msg.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
-            
-            # Mehrfach-Leerzeichen, die durch \n entstanden sind, eindampfen
             clean_msg = " ".join(clean_msg.split())
             
-            # 2. Kleinere Chunks wählen (150 Zeichen), das erhöht die Reichweite und Stabilität enorm!
-            max_chunk_size = 150
+            # 2. Chunks schneiden (140 Zeichen)
+            max_chunk_size = 140
             chunks = [clean_msg[i:i+max_chunk_size] for i in range(0, len(clean_msg), max_chunk_size)]
             total_chunks = len(chunks)
+
+            # Ein einfaches Flag, das signalisiert, ob das Board bereit für das nächste Paket ist
+            self.mesh_ready_for_next = False
+
+            # Lokale Hilfsfunktion für das ACK-Event (Genauso wie in deiner Version!)
+            def on_ack_received(packet, interface):
+                routing = packet.get("decoded", {}).get("routing", {})
+                error_reason = routing.get("errorReason", "NONE")
+                
+                if error_reason == "NONE":
+                    print("[Mesh] 👍 T-Beam hat ein Paket erfolgreich auf die Antenne gelegt.")
+                    self.mesh_ready_for_next = True
+
+            # Temporär auf das Routing-Signal von Meshtastic lauschen
+            pub.subscribe(on_ack_received, "meshtastic.receive.routing")
 
             for index, chunk in enumerate(chunks):
                 formatted_chunk = chunk
                 if total_chunks > 1:
                     formatted_chunk = f"({index+1}/{total_chunks}) {chunk}"
                 
-                # Paket an den T-Beam übergeben
+                # Sende-Flag für diesen Durchlauf zurücksetzen
+                self.mesh_ready_for_next = False
+                
+                print(f"[Mesh] Übergebe Teil {index+1}/{total_chunks} an T-Beam...")
+                
+                # Nachricht absenden
                 self.interface.sendText(formatted_chunk)
                 
-                # Lokale GUI befüllen
+                # Lokale GUI-Einträge befüllen
                 self.digi_terminals["LORA_MESH"]["monitor"].insert(
                     "end", f"[{self.utc_time_str()}] TX ({index+1}/{total_chunks}): {chunk}\n"
                 )
@@ -3770,24 +3790,37 @@ class NoFuSTX:
                 self.digi_terminals["LORA_MESH"]["monitor"].see("end")
                 self.digi_terminals["LORA_MESH"]["receive"].see("end")
                 
-                # --- DIE GEHEIMWAFFE GEGEN DEN SPAMFILTER ---
-                # Wenn noch weitere Pakete folgen, warten wir 1.5 Sekunden,
-                # damit der T-Beam das aktuelle Paket in Ruhe senden kann!
-                if index < total_chunks - 1:
-                    print(f"[Mesh] Warte auf T-Beam Sende-Bereitschaft (Teil {index+1} von {total_chunks})...")
-                    self.root.update() # Hält die GUI während der Pause flüssig
-                    time.sleep(2.5)
-            self.log_list.insert(0, f"[{self.utc_iso_timestamp()}] IARU-Meldung über Mesh gesendet: {clean_msg[:50]}{'...' if len(clean_msg) > 50 else ''}")
-            self.write_session_log(f"[{self.utc_iso_timestamp()}] IARU-Meldung über Mesh gesendet: {clean_msg[:50]}{'...' if len(clean_msg) > 50 else ''}")
+                # --- WARTEN AUF HARDWARE-BEREITSCHAFT ---
+                if total_chunks > 1:
+                    start_wait = time.time()
+                    while not self.mesh_ready_for_next:
+                        self.root.update()  # GUI flüssig halten
+                        time.sleep(0.1)     # CPU schonen
+                        
+                        # Sicherheits-Timeout (Erhöht auf 12 Sekunden, da End-to-End-ACKs im Mesh dauern)
+                        if time.time() - start_wait > 12:
+                            print(f"[Mesh] ⚠️ Kein ACK erhalten für Teil {index+1}, fahre aus Sicherheitsgründen fort...")
+                            break
+                
+                # --- DAS GEHEIMNIS GEGEN DEN PAKETVERLUST ---
+                # Egal ob das ACK kam oder das Timeout gegriffen hat: Wir zwingen Python 
+                # zu einer echten Pause von 3 Sekunden, damit der serielle Puffer im USB-Chip 
+                # der Hardware absolut leergeschrieben ist, bevor der nächste Chunk reinkommt!
+                if total_chunks > 1:
+                    for _ in range(6):
+                        self.root.update()
+                        time.sleep(0.5)
 
+            # Nach der Schleife den temporären Listener wieder sauber abmelden
+            pub.unsubscribe(on_ack_received, "meshtastic.receive.routing")
+            print("[Mesh] IARU-Meldung vollständig verarbeitet.")
+            
         except Exception as e:
             print(f"[Mesh] Fehler beim Senden: {e}")
             self.digi_terminals["LORA_MESH"]["monitor"].insert(
                 "end", f"[{self.utc_time_str()}] ❌ Sende-Fehler: {e}\n"
             )
             self.digi_terminals["LORA_MESH"]["monitor"].see("end")
-            self.log_list.insert(0, f"[{self.utc_iso_timestamp()}] Fehler beim Senden: {e}")
-            self.write_session_log(f"[{self.utc_iso_timestamp()}] Fehler beim Senden: {e}")
 
 # ---------- MAIN ----------
 # Startet die Anwendung, indem die Hauptklasse instanziiert und die Tkinter-Hauptschleife gestartet wird.
