@@ -306,19 +306,19 @@ Regionale Frequenzzuordnungen und Betriebsarten nach IARU-Region.
 ### Normale Ausführung
 
 ```bash
-python NoFuSTX_1-9-15b.py
+python NoFuS-TX.py
 ```
 
 ### Mit Umgebungsvariablen (Linux/macOS)
 
 ```bash
-PYTHONPATH=libs python NoFuSTX_1-9-15b.py
+PYTHONPATH=libs python NoFuS-TX.py
 ```
 
 ### Debug-Modus
 
 ```bash
-python -u NoFuSTX_1-9-15b.py 2>&1 | tee debug.log
+python -u NoFuS-TX.py 2>&1 | tee debug.log
 ```
 
 ---
@@ -327,7 +327,7 @@ python -u NoFuSTX_1-9-15b.py 2>&1 | tee debug.log
 
 ```
 NoFuSTX_Project/
-├── NoFuSTX_1-9-15b.py          # Hauptanwendung
+├── NoFuS-TX.py          # Hauptanwendung
 ├── README.md                    # Diese Datei
 ├── requirements.txt             # Python-Abhängigkeiten
 ├── check_requirements.py         # Abhängigkeits-Checker
