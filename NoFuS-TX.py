@@ -16,7 +16,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 # =============================================================================
 # =============================================================================
-# NoFuS-TX - IMPORT SEKTION (v1.9.15b)
+# NoFuS-TX - IMPORT SEKTION (v1.9.16a)
 # Unterstützt: APRS, JS8Call, VARA, Winlink, MT63, RTTY, SSTV, FAX, AX.25
 # Plattformen: Windows, Linux, macOS
 # =============================================================================
@@ -33,9 +33,10 @@ if os.path.exists(libs_path):
     # Wir schieben unseren libs-Ordner an Position 0 der Suchliste
     sys.path.insert(0, libs_path)
     # Debug-Ausgabe in der Konsole
-    print(f"[*] NoFuS-TX Portable-Modus: Nutze lokale Libs aus {libs_path}")
+    print(f"[Lib] NoFuS-TX Portable-Modus: Nutze lokale Libs aus {libs_path}")
 # Jetzt können wir die Module importieren, die in libs liegen (z.B. pyjs8call, pyvara, etc.)
 import datetime
+
 import json
 import subprocess
 import platform
@@ -140,11 +141,20 @@ try:
     import ax25.socket
 except ImportError:
     ax25 = None
+try:
+    import meshtastic
+    import meshtastic.serial_interface
+    import meshtastic.mesh_interface
+    import pubsub 
+    from pubsub import pub  # Für die Kommunikation mit Meshtastic-Threads
+except ImportError:
+        meshtastic = None
+
 # Hauptklasse der Anwendung
 class NoFuSTX:
     def __init__(self, root):
         self.root = root
-        self.root.title("NoFuS-TX - Einsatzleitsoftware v1.9.15b")
+        self.root.title("NoFuS-TX - Einsatzleitsoftware v1.9.16a")
         try:
             # Wir laden das PNG als PhotoImage
             icon_img = tk.PhotoImage(file="icons/NoFuSTX.png")
@@ -210,7 +220,12 @@ class NoFuSTX:
                     "port": "8772",
                     "call": "NOCALL",
                 },
-                "LORA_MESH": {"active": True, "freq": "868.0 MHz", "modem": "LongFast"},
+                "LORA_MESH": {
+                    "active": True,
+                    "Device": "MeshID",
+                    "modem": "LongFast",
+                    "ConnectionMode": "/dev/ttyACM0",
+                    },
                 "RTTY": {
                     "active": False,
                     "bps": "45.45",
@@ -290,10 +305,11 @@ class NoFuSTX:
                 ["LSB","3.760 kHz", "LSB in Fonie zur Kommunikation über sehr große Entfernungen (Deutschland weit)"],
                 ]
         }
-
+        
         self.load_settings()
         self.load_frequencies()
         self.counter_number_msg = self.load_message_counter()
+        self.init_session_log()
         if not self.config.get("DEPENDENCIES", {}).get("is_read", 0):
             self.check_dependencies()
             self.config["DEPENDENCIES"]["is_read"] = 1
@@ -301,8 +317,25 @@ class NoFuSTX:
             self.show_config_window()
             self.save_settings()
         self.setup_ui()
-        self.init_session_log()
+        self.mesh_connected = False
+        self.interface = None
+
+        # Prüfen, ob LORA_MESH in deiner Config aktiv geschaltet ist
+        if self.config["MODES"].get("LORA_MESH", {}).get("active"):
+            print("[Mesh] Konfiguration aktiv. Starte Hardware-Suche...")
+            self.init_meshtastic_hardware()
         self.init_aprs_system()
+
+        #try:
+            #self.interface = meshtastic.serial_interface.SerialInterface()
+        #except Exception as e:
+            #print(f"Fehler beim Initialisieren der Meshtastic-Verbindung: {e}")
+        #pub.subscribe(self.on_receive, "meshtastic.receive")
+        # self.start_monitor_thread()
+        #self.meshtastic_test()  # Teste die Meshtastic-Verbindung beim Start (optional, kann später in ein separates Menü verschoben werden)
+
+        
+
     # --------- KONFIGURATIONSLADUNG & -SPEICHERUNG ----------
     def load_settings(self):
         if not os.path.exists(self.config_file):
@@ -376,6 +409,7 @@ class NoFuSTX:
                             self.config["SDR"][key] = value
             except Exception:
                 self.config = self.default_config
+        
     def check_dependencies(self):
         missing = []
         # GUI / Karten
@@ -456,6 +490,7 @@ class NoFuSTX:
         threading.Thread(target=self._run_broadcast_sender, daemon=True).start()
         threading.Thread(target=self._run_broadcast_listener, daemon=True).start()
         threading.Thread(target=self._run_http_server, daemon=True).start()
+        self.write_session_log(f"[{self.utc_iso_timestamp()}] LAN-Sync initialisiert. Hintergrunddienste gestartet.")
 
     def _get_local_tile_count(self):
         """Zählt, wie viele Kartenkacheln wir aktuell haben"""
@@ -536,6 +571,7 @@ class NoFuSTX:
             conn.close()
             self.update_sync_ui("idle") # type: ignore
             messagebox.showinfo("Sync", "Karten erfolgreich abgeglichen!")
+            self.write_session_log(f"[{self.utc_iso_timestamp()}] Karten von {other_db_path} erfolgreich abgeglichen.")
         except Exception as e:
             messagebox.showerror("Sync Fehler", str(e))
 
@@ -556,6 +592,7 @@ class NoFuSTX:
             usercall_config["CALLSINGEN"] = new_callsign
             self.save_settings()
             usercall_win.destroy()
+            self.write_session_log(f"[{self.utc_iso_timestamp()}] Rufzeichen gesetzt: {new_callsign}")
 
         tk.Button(usercall_win, text="Speichern", command=save_callsign).pack(pady=10)
     # --------- FREQUENZENLADUNG & -SPEICHERUNG ----------
@@ -682,6 +719,8 @@ class NoFuSTX:
         self.stop_direct_sdr() # Falls der direkte SDR-Modus aktiv ist, beendet den Prozess
         self.finalize_session_log()
         self.root.destroy()
+        if self.interface and self.mesh_connected:
+            self.interface.close() # Schließt die Verbindung zum Meshtastic-Gerät
 
     # ---------- APRS GRUND-INITIALISIERUNG ----------
     def init_aprs_system(self):
@@ -698,6 +737,7 @@ class NoFuSTX:
                     0,
                     f"{datetime.datetime.utcnow().strftime('%H:%M:%S')} : APRS deaktiviert (aprslib nicht installiert).",
                 )
+                self.write_session_log(f"[{self.utc_iso_timestamp()}] APRS deaktiviert (aprslib nicht installiert).")
             except Exception:
                 pass
             return
@@ -1259,6 +1299,7 @@ class NoFuSTX:
                     if msg and hasattr(self, "log_list"):
                         try:
                             self.log_list.insert(0, msg)
+                            self.write_session_log(f"[{self.utc_iso_timestamp()}] {msg}")
                         except Exception:
                             pass
         except queue.Empty:
@@ -1318,6 +1359,7 @@ class NoFuSTX:
             )
             try:
                 self.log_list.insert(0, log_text)
+                self.write_session_log(f"[{self.utc_iso_timestamp()}] {log_text}")
             except Exception:
                 pass
 
@@ -1368,6 +1410,7 @@ class NoFuSTX:
             )
             try:
                 self.log_list.insert(0, msg)
+                self.write_session_log(f"[{self.utc_iso_timestamp()}] {msg}")
             except Exception:
                 pass
 
@@ -1630,7 +1673,8 @@ class NoFuSTX:
     # --- SDR ---
     def chk_sdr(self):
         No_sdr = False
-        print("Prüfe Anwesenheit von SDRs...\n")
+        print("[SDR]Prüfe Anwesenheit von SDRs...")
+        self.write_session_log(f"[{self.utc_iso_timestamp()}] Prüfe Anwesenheit von SDRs...")
 
         if sys.platform == "linux":
             cmd = "lsusb | grep -i rtl"
@@ -1645,15 +1689,18 @@ class NoFuSTX:
         try:
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
             if result.returncode == 0 and result.stdout.strip():
-                print("SDR gefunden:\n" + result.stdout)
+                print("[SDR] SDR gefunden:\n" + result.stdout)
+                self.write_session_log(f"[{self.utc_iso_timestamp()}] SDR gefunden: {result.stdout.strip()}")
                 No_sdr = False
             else:
-                print("Kein SDR gefunden")
+                print("[SDR] Kein SDR gefunden")
+                self.write_session_log(f"[{self.utc_iso_timestamp()}] Kein SDR gefunden.")
                 if self.config.get("SDR", {}).get("active", True):
                     messagebox.showwarning("SDR Check", "Kein SDR gefunden. Bitte überprüfen Sie die Verbindung und die Treiber.")  
                 No_sdr = True
         except Exception as e:
-            print(f"Fehler: {e}")
+            print(f"[SDR] Fehler: {e}")
+            self.write_session_log(f"[{self.utc_iso_timestamp()}] Fehler beim Prüfen der SDR-Anwesenheit: {e}")
             No_sdr = False
         return No_sdr
 
@@ -2260,7 +2307,7 @@ class NoFuSTX:
         except: online_status = False
         
         print(f"[Map] {'🌐 ONLINE' if online_status else '🔌 OFFLINE'} aktiv.")
-
+        self.write_session_log(f"Kartenmodus: {'Online' if online_status else 'Offline'}")
         # 3. Widget erstellen (Stabilster Weg)
         
         try:
@@ -2380,7 +2427,6 @@ class NoFuSTX:
         ttk.Button(
             btn_f,
             text="Einheit hinzufügen",
-            # command=lambda: messagebox.showinfo("Info", "Funktion in v1.9.14 geplant."),
             command=self.add_unit
         ).pack(side="left", padx=5)
 
@@ -2601,7 +2647,7 @@ class NoFuSTX:
         modes = ["Nur Log"]
         for mode, data in self.config["MODES"].items():
             # Alle aktiven Modi für Text-Übertragung anbieten
-            if mode in ("RTTY", "WINLINK", "JS8CALL", "VARA", "MT63") and data.get("active"):
+            if mode in ("RTTY", "WINLINK", "JS8CALL", "VARA", "MT63", "LORA_MESH") and data.get("active"):
                 modes.append(mode)
 
         self.send_mode_var = tk.StringVar(value=modes[0])
@@ -2689,7 +2735,7 @@ class NoFuSTX:
         about_win.title("Über NoFuS-TX")
         about_win.geometry("400x300")
 
-        tk.Label(about_win, text="NoFuS-TX - Einsatzleitsoftware v1.9.15b").pack(pady=10)
+        tk.Label(about_win, text="NoFuS-TX - Einsatzleitsoftware v1.9.16a").pack(pady=10)
         tk.Label(about_win, text="© 2026 NoFuS-TX DO2ITH").pack(pady=5)
         tk.Label(about_win, text="Alle Rechte vorbehalten.").pack(pady=10)
         tk.Label(about_win, text="E-Mail: info@ithnet.de").pack(pady=10)
@@ -3060,9 +3106,71 @@ class NoFuSTX:
                 key = f"AX:{port.get('nickname', '')}"
                 self.digi_terminals[key] = t
 
+        for mode, data in self.config["MODES"].items():
+            if mode == "LORA_MESH" and data.get("active"):
+                f = ttk.Frame(nb)
+                nb.add(f, text=f"{mode}")
+                self.digi_terminals[mode] = {}
+
+                # --- RECHTE SEITE: Die Liste zuerst ---
+                lf_list = tk.LabelFrame(f, text=" Aktive Nodes ", fg="#00FF00", bg="#001100")
+                lf_list.pack(side="right", fill="both", padx=5, pady=2)
+                
+                # 1. Den Scrollbalken erstellen (Wichtig: bg/troughcolor für dein Dunkel-Design)
+                scrollbar = tk.Scrollbar(lf_list, orient="vertical", bg="#001100")
+                scrollbar.pack(side="right", fill="y") # Klebt rechts und geht von oben nach unten
+
+                scrollbarR = tk.Scrollbar(lf_list, orient="horizontal", bg="#001100")
+                scrollbarR.pack(side="bottom", fill="x")
+                
+                # 2. Die Listbox erstellen (jetzt mit side="left" und der yscrollcommand-Verknüpfung)
+                node_list = tk.Listbox(
+                    lf_list, 
+                    bg="#001100", 
+                    fg="#00FF00", 
+                    font=("Courier", 10), 
+                    borderwidth=0, 
+                    width=35,
+                    yscrollcommand=scrollbar.set, # <--- Hier verknüpfen!
+                    xscrollcommand=scrollbarR.set
+                )
+                node_list.pack(side="left", expand=1, fill="both", padx=5, pady=5)
+                
+                # 3. Dem Scrollbalken sagen, was er steuern soll
+                scrollbar.config(command=node_list.yview) # <--- Und hier zurück-verknüpfen!
+                scrollbarR.config(command=node_list.xview)
+                # Wie gewohnt im Dictionary speichern
+                self.digi_terminals[mode]["node_list"] = node_list
+
+                # --- LINKE SEITE ---
+                left_container = tk.Frame(f, bg="#001100")
+                left_container.pack(side="left", expand=1, fill="both")
+
+                # MONITOR BEREICH
+                lf_mon = tk.LabelFrame(left_container, text=" System-Status / Monitor ", fg="#00FF00", bg="#001100")
+                lf_mon.pack(fill="x", padx=5, pady=2)
+                mon = tk.Text(lf_mon, height=8, bg="#001100", fg="#00FF00", font=("Courier", 10), borderwidth=0)
+                mon.pack(fill="x", padx=5, pady=5)
+                self.digi_terminals[mode]["monitor"] = mon
+
+                # RECEIVE BEREICH
+                lf_recv = tk.LabelFrame(left_container, text=" Funkverkehr (RX Text) ", fg="#00FF00", bg="#001100")
+                lf_recv.pack(expand=1, fill="both", padx=5, pady=2)
+                recv = tk.Text(lf_recv, height=10, bg="#001100", fg="#00FF00", font=("Courier", 11), borderwidth=0)
+                recv.pack(expand=1, fill="both", padx=5, pady=5)
+                self.digi_terminals[mode]["receive"] = recv
+
+                # SENDER BEREICH
+                lf_send = tk.LabelFrame(left_container, text=" Senden (TX Text) ", fg="#00FF00", bg="#001100")
+                lf_send.pack(fill="x", padx=5, pady=2)
+                send = tk.Entry(lf_send, bg="#001100", fg="#00FF00", font=("Courier", 11), borderwidth=0)
+                send.pack(fill="x", padx=5, pady=5)
+                send.bind("<Return>", self.on_mesh_send_enter)
+                self.digi_terminals[mode]["sender"] = send
+
         # Weitere Modi als einfache Terminals
         for mode, data in self.config["MODES"].items():
-            if mode not in ("AX25_PORTS", "APRS_IS") and data.get("active"):
+            if mode not in ("AX25_PORTS", "APRS_IS", "LORA_MESH") and data.get("active"):
                 f = ttk.Frame(nb)
                 nb.add(f, text=mode)
                 t = tk.Text(f, bg="#001100", fg="#00FF00", font=("Courier", 11))
@@ -3106,12 +3214,13 @@ class NoFuSTX:
         return counter
 
     def compose_iaru_text(self, header_lines, prio, body):
-        text_trenner = "####################### Meldungstext #######################\n\n\n"
+        text_trenner = "# Meldungstext #\n"
         return (
             text_trenner
-            + "--- IARU-Meldung ---\n"
+            + "- IARU-Meldung -\n"
             + "\n".join(header_lines)
             + f"\nWICHTIGKEIT: {prio}\n\n{body}\n"
+            + f"\n--- Ende der Meldung ---\n"
         )
 
     def sanitize_filename_part(self, part):
@@ -3162,13 +3271,13 @@ class NoFuSTX:
         body_lines = []
 
         for line in lines:
-            if line.startswith("####################### Meldungstext"):
+            if line.startswith("# Meldungstext #"):
                 in_body = True
                 continue
             if in_body:
                 body_lines.append(line)
                 continue
-            if line.startswith("--- IARU-Meldung ---"):
+            if line.startswith("- IARU-Meldung -"):
                 continue
             if ":" in line:
                 key, val = line.split(":", 1)
@@ -3309,13 +3418,16 @@ class NoFuSTX:
         direction = mode if mode and mode != "Nur Log" else "Lokal"
 
         full_text, file_path = self.process_iaru_message(direction, header_lines, prio, body)
-
-        if mode and mode != "Nur Log":
+        '''MESH-TX'''
+        if mode == "LORA_MESH" and self.mesh_connected:
+            self.iaru_mesh_send_msg(full_text)
+        if mode and mode != "Nur Log" and mode != "LORA_MESH":
             term = getattr(self, "digi_terminals", {}).get(mode)
             if term:
-                term.insert("end", "\n--- IARU-Meldung ---\n")
+                term.insert("end", "\n- IARU-Meldung -\n")
                 term.insert("end", full_text + "\n")
                 term.see("end")
+                
             else:
                 messagebox.showwarning(
                     "Digimode",
@@ -3331,7 +3443,7 @@ class NoFuSTX:
         else:
             log_text = f"{time_str} : MSG #{nr} ins Log übernommen."
         self.log_list.insert(0, log_text)
-
+        self.write_session_log(f"[{self.utc_iso_timestamp()}] {log_text}")
         # Vollständige Meldung zusätzlich in die Einsatz-Session-Datei schreiben
         session_entry = [
             f"[{ts}] IARU-Meldung protokolliert:",
@@ -3373,6 +3485,309 @@ class NoFuSTX:
         else:
             self.zoom_label.config(text=f"{current_tab_text}")
         self.root.after(2000, self.get_current_map_zoom)  # Alle 2 Sekunden aktualisieren
+
+    # --- Meshtastic integration --- #
+    def init_meshtastic_hardware(self):
+        try:
+                       
+            # Versuche die USB/Seriell-Verbindung aufzubauen
+            dev = self.config.get("MODES", {}).get("LORA_MESH", "").get("ConnectionMode", "")
+            print(f"[Mesh] Gerätepfad {dev}")
+            self.interface = meshtastic.serial_interface.SerialInterface(devPath=dev)
+
+            d = self.interface.getMyNodeInfo()
+            # Wenn erfolgreich: Flags setzen und Funktionen anstoßen
+            self.mesh_connected = True
+            print(f"[Mesh] ✅ Gerät erfolgreich initialisiert.")
+            
+            # Deine Start-Kette für den Mesh-Betrieb
+            pub.subscribe(self.on_receive, "meshtastic.receive")
+            self.meshtastic_test()
+            self.start_monitor_thread()            
+        except Exception as e:
+            # Falls kein T-Beam steckt oder der Port blockiert ist
+            self.mesh_connected = False
+            self.interface = None
+            print(f"[Mesh] ❌ Hardware nicht gefunden oder blockiert!")
+            
+            # Direktes Feedback in deinen Monitor (Mülleimer/Log-Bereich)
+            if "LORA_MESH" in self.digi_terminals:
+                self.digi_terminals["LORA_MESH"]["monitor"].insert(
+                    "end", 
+                    f"[{self.utc_time_str()}] ⚠️ SYSTEM-WARNUNG:\n"
+                    f"Hardware konnte nicht initialisiert werden!\n"
+                    f"Mesh-Modus läuft im OFFLINE-Modus.\n"
+                    f"Fehler: {e}\n\n"
+                )
+                self.digi_terminals["LORA_MESH"]["monitor"].see("end")
+
+    def insert_with_limit(self, widget, text_to_insert, max_lines=100):
+        """Fügt Text ein und wirft oben Zeilen raus, wenn es zu voll wird."""
+        # 1. Text ganz normal unten rein und scrollen
+        widget.insert("end", text_to_insert)
+        widget.see("end")
+        
+        # 2. Aktuelle Zeilenanzahl ermitteln
+        total_lines = int(widget.index('end-1c').split('.')[0])
+        
+        # 3. Wenn das Limit gesprengt wird, oben abschneiden
+        if total_lines > max_lines:
+            lines_to_delete = total_lines - max_lines
+            widget.delete("1.0", f"{lines_to_delete + 1}.0")
+
+    def meshtastic_test(self):
+        try:
+            
+            data = self.interface.getMyNodeInfo()
+
+            # Daten sicher extrahieren
+            # .get() verhindert Abstürze, falls ein Feld (wie position) fehlt
+            user_info = data.get('user', {})
+            long_name = user_info.get('longName', 'Unbekannt')
+            hw_model = user_info.get('hwModel', 'T-Beam?')
+            
+            pos = data.get('position', {})
+            # Umrechnung der Meshtastic-Koordinaten in normales Format
+            lat = pos.get('latitude')
+            lon = pos.get('longitude')
+            high = pos.get('altitude')
+            # print(f"lat: {lat}")
+            self.log_list.insert(0, f"[{self.utc_iso_timestamp()}]---Meshtastic--- Gerät gefunden")
+            self.write_session_log(f"[{self.utc_iso_timestamp()}] ---Meshtastic--- Gerät gefunden")
+            self.write_session_log(f"[{self.utc_iso_timestamp()}] Mesh Node: {long_name} | Hardware: {hw_model}")
+            self.log_list.insert(0, f"[{self.utc_iso_timestamp()}] Mesh Node: {long_name} | Hardware: {hw_model}")
+            self.digi_terminals["LORA_MESH"]["monitor"].insert("end", f"Mesh Node: {long_name} | Hardware: {hw_model}\n")
+            
+            if lat and lon:
+                # Meshtastic nutzt 10^7 Format (7 Nachkommastellen)
+                self.log_list.insert(0, f"[{self.utc_iso_timestamp()}] Position: LAT {lat}, LON {lon}, Höhe: {high}m")
+            else:
+                self.log_list.insert(0, f"[{self.utc_iso_timestamp()}] Position: Keine GPS-Daten verfügbar.")
+
+            self.mesh_my_heard()
+
+            return data
+
+        except Exception as e:
+            print(f"Fehler bei Hardware Zugriff: {e}")
+            return None
+        
+    def mesh_my_heard(self):
+        try:
+            # Das Dictionary mit allen bekannten Teilnehmern
+            nodes = self.interface.nodes
+            self.digi_terminals["LORA_MESH"]["node_list"].delete(0, "end")
+            self.digi_terminals["LORA_MESH"]["node_list"].insert("end", f"Name                 | ID           | Letzter Kontakt(UTC) | SNR")
+
+            if nodes:
+                for node_id, node_data in nodes.items():
+                    user = node_data.get('user', {})
+                    long_name = user.get('longName', 'Unbekannt')
+                    hex_id = user.get('id', 'Unbekannt')
+                    
+                    # Zeitstempel des letzten Kontakts (Last Heard)
+                    last_heard_raw = node_data.get('lastHeard')
+                    if last_heard_raw:
+                        last_heard = datetime.datetime.utcfromtimestamp(last_heard_raw).strftime('%d.%m %H:%M')
+                    else:
+                        last_heard = "Nie"
+                    
+                    # Signalqualität (SNR) - wie gut hörst du den anderen?
+                    snr = node_data.get('snr', 'N/A')
+
+                    self.log_list.insert(0, f"[{self.utc_iso_timestamp()}] Mesh Node: {long_name} (ID: {hex_id}), Last Heard: {last_heard}, SNR: {snr}")
+                    self.digi_terminals["LORA_MESH"]["node_list"].insert("end", f"{long_name:<20} | {hex_id:<12} | {last_heard:<20} | {snr}")
+
+            self.root.after(180000, self.mesh_my_heard) # Alle 3 Minuten aktualisieren
+        except Exception as e:
+            print(f"Fehler: {e}")
+        
+    def start_monitor_thread(self):
+        # Der Thread nutzt self.interface zum ZUHÖREN
+        #t = threading.Thread(target=self.receive_loop, daemon=True)
+        #t.start()
+        pass
+        
+
+    # 1. Eine normale Funktion in deiner Klasse
+    def on_receive(self, packet, interface):
+        # print(f"Paket empfangen:\n {packet} \n################\n")
+        sender_id = packet.get('fromId')
+        user_info = {}
+        # --- SENDER-ID IN NAME ÜBERSETZEN ---
+        sender_name = "Unbekannt"
+        
+        # Wir schauen in der Node-DB nach, ob wir diese ID kennen
+        if self.interface.nodes and sender_id in self.interface.nodes:
+            node_info = self.interface.nodes[sender_id]
+            user_info = node_info.get('user', {})
+            # Versuche den LongName zu bekommen, sonst ShortName, sonst bleibt es die ID
+            sender_name = user_info.get('longName', user_info.get('shortName', sender_id))
+        else:
+            # Falls der Node brandneu ist und noch nicht in der Liste war
+            sender_name = f"ID: {sender_id}"
+
+        decoded = packet.get('decoded', {})
+        portnum = decoded.get('portnum') # Was für eine Art von Daten?
+
+        self.digi_terminals["LORA_MESH"]["monitor"].insert("end", f"Empfangenes Paket: {packet}\n")
+        self.digi_terminals["LORA_MESH"]["monitor"].see("end")
+        #self.write_session_log(f"[{self.utc_iso_timestamp()}] Empfangenes Paket: {packet}")
+        self.insert_with_limit(self.digi_terminals["LORA_MESH"]["monitor"], packet, max_lines=150)
+        
+        if portnum == "TEXT_MESSAGE_APP":
+            msg = decoded.get('text')
+            # Hier der schöne Insert mit Namen statt kryptischer ID
+            self.digi_terminals["LORA_MESH"]["receive"].insert(
+                "end", 
+                f"[{self.utc_time_str()}] {sender_name}:\n{msg}\n"
+            )
+            self.digi_terminals["LORA_MESH"]["receive"].see("end")
+
+        # Wenn es eine Position ist:
+        elif portnum == "POSITION_APP":
+            pos = decoded.get('position', {})
+            lat = pos.get('latitude')
+            lon = pos.get('longitude')
+            if lat is not None and lon is not None:
+                short_name = user_info.get('shortName')
+                display_src = short_name or sender_name
+                self.digi_terminals["LORA_MESH"]["monitor"].insert(
+                    "end",
+                    f"[{self.utc_time_str()}] POSITION von {display_src}: {lat:.7f}, {lon:.7f}\n"
+                )
+                self.digi_terminals["LORA_MESH"]["monitor"].see("end")
+                self.aprs_update_queue.put({
+                    "type": "position",
+                    "lat": lat,
+                    "lon": lon,
+                    "src": display_src,
+                    #"id": sender_id,
+                    "symbol_table": "/",
+                    "symbol_code": "{",
+                    "source_type": "Mesh POSITION_APP",
+                })
+            else:
+                print(f"POSITION_APP ohne Koordinaten: {pos}")
+
+        # Wenn es Telemetrie ist (Batterie etc.):
+        elif portnum == "TELEMETRY_APP":
+            tele = decoded.get('telemetry', {})
+
+    def receive_loop(self):
+        if not self.interface or not hasattr(self.interface, "stream_packets"):
+            return
+
+        try:
+            for packet in self.interface.stream_packets():
+                self.on_receive(packet, self.interface)
+        except Exception as e:
+            print(f"[Mesh] Fehler im Empfangs-Loop: {e}")
+
+    def start_monitor_thread(self):
+        if not self.mesh_connected or not self.interface:
+            return
+        if not hasattr(self.interface, "stream_packets"):
+            # Einige meshtastic-Versionen liefern empfangene Pakete über pubsub statt über stream_packets
+            return
+        t = threading.Thread(target=self.receive_loop, daemon=True)
+        t.start()
+
+    def on_mesh_send_enter(self, event):
+        """Wird aufgerufen, wenn im Entry-Feld ENTER gedrückt wird."""
+        if not self.mesh_connected or not self.interface:
+            print("[Mesh] Senden nicht möglich: Keine Hardware verbunden.")
+            return
+            
+        widget = event.widget
+        # Bei tk.Entry holt ein einfaches .get() den kompletten Text!
+        msg_text = widget.get().strip()
+        
+        if msg_text:
+            try:
+                # Text per Meshtastic senden
+                self.interface.sendText(msg_text)
+                
+                # Lokale Chat-Anzeige befüllen
+                self.digi_terminals["LORA_MESH"]["receive"].insert(
+                    "end", 
+                    f"[{self.utc_time_str()}] ICH:\n{msg_text}\n"
+                )
+                self.digi_terminals["LORA_MESH"]["receive"].see("end")
+                
+                # Im Monitor mitloggen
+                self.digi_terminals["LORA_MESH"]["monitor"].insert(
+                    "end", 
+                    f"[{self.utc_time_str()}] TX: {msg_text}\n"
+                )
+                self.digi_terminals["LORA_MESH"]["monitor"].see("end")
+                
+                # Bei tk.Entry löscht man von Index 0 bis zum bitteren Ende ("end")
+                widget.delete(0, "end")
+                
+            except Exception as e:
+                print(f"[Mesh] Fehler beim Senden: {e}")
+                self.digi_terminals["LORA_MESH"]["monitor"].insert(
+                    "end", 
+                    f"[{self.utc_time_str()}] ❌ Sende-Fehler: {e}\n"
+                )
+                self.digi_terminals["LORA_MESH"]["monitor"].see("end")
+
+    def iaru_mesh_send_msg(self, msg):
+        if not self.mesh_connected or not self.interface:
+            print("[Mesh] Senden nicht möglich: Keine Hardware verbunden.")
+            return
+        
+        try:
+            # 1. Text bereinigen für den Funkweg
+            # Wir ersetzen Zeilenumbrüche durch Leerzeichen und säubern Umlaute
+            clean_msg = msg.replace("\n", " ").replace("Ä", "Ae").replace("Ö", "Oe").replace("Ü", "Ue")
+            clean_msg = clean_msg.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
+            
+            # Mehrfach-Leerzeichen, die durch \n entstanden sind, eindampfen
+            clean_msg = " ".join(clean_msg.split())
+            
+            # 2. Kleinere Chunks wählen (150 Zeichen), das erhöht die Reichweite und Stabilität enorm!
+            max_chunk_size = 150
+            chunks = [clean_msg[i:i+max_chunk_size] for i in range(0, len(clean_msg), max_chunk_size)]
+            total_chunks = len(chunks)
+
+            for index, chunk in enumerate(chunks):
+                formatted_chunk = chunk
+                if total_chunks > 1:
+                    formatted_chunk = f"({index+1}/{total_chunks}) {chunk}"
+                
+                # Paket an den T-Beam übergeben
+                self.interface.sendText(formatted_chunk)
+                
+                # Lokale GUI befüllen
+                self.digi_terminals["LORA_MESH"]["monitor"].insert(
+                    "end", f"[{self.utc_time_str()}] TX ({index+1}/{total_chunks}): {chunk}\n"
+                )
+                self.digi_terminals["LORA_MESH"]["receive"].insert(
+                    "end", f"[{self.utc_time_str()}] ICH:\n{formatted_chunk}\n"
+                )
+                self.digi_terminals["LORA_MESH"]["monitor"].see("end")
+                self.digi_terminals["LORA_MESH"]["receive"].see("end")
+                
+                # --- DIE GEHEIMWAFFE GEGEN DEN SPAMFILTER ---
+                # Wenn noch weitere Pakete folgen, warten wir 1.5 Sekunden,
+                # damit der T-Beam das aktuelle Paket in Ruhe senden kann!
+                if index < total_chunks - 1:
+                    print(f"[Mesh] Warte auf T-Beam Sende-Bereitschaft (Teil {index+1} von {total_chunks})...")
+                    self.root.update() # Hält die GUI während der Pause flüssig
+                    time.sleep(2.5)
+            self.log_list.insert(0, f"[{self.utc_iso_timestamp()}] IARU-Meldung über Mesh gesendet: {clean_msg[:50]}{'...' if len(clean_msg) > 50 else ''}")
+            self.write_session_log(f"[{self.utc_iso_timestamp()}] IARU-Meldung über Mesh gesendet: {clean_msg[:50]}{'...' if len(clean_msg) > 50 else ''}")
+
+        except Exception as e:
+            print(f"[Mesh] Fehler beim Senden: {e}")
+            self.digi_terminals["LORA_MESH"]["monitor"].insert(
+                "end", f"[{self.utc_time_str()}] ❌ Sende-Fehler: {e}\n"
+            )
+            self.digi_terminals["LORA_MESH"]["monitor"].see("end")
+            self.log_list.insert(0, f"[{self.utc_iso_timestamp()}] Fehler beim Senden: {e}")
+            self.write_session_log(f"[{self.utc_iso_timestamp()}] Fehler beim Senden: {e}")
 
 # ---------- MAIN ----------
 # Startet die Anwendung, indem die Hauptklasse instanziiert und die Tkinter-Hauptschleife gestartet wird.
