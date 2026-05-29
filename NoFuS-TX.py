@@ -153,6 +153,12 @@ except ImportError:
     meshtastic_mesh_interface = None
     pubsub = None
     pub = None
+try:
+    import urllib.request
+    import shutil
+except ImportError:
+    urllib = None
+    shutil = None
 
 # Hauptklasse der Anwendung
 class NoFuSTX:
@@ -189,6 +195,7 @@ class NoFuSTX:
         self.fldigi_polling_active = False  # Flag gegen doppelte Polling-Timer
         self.fldigi_after_id = None  # ID des laufenden after()-Timers
         self.recive_buffer = ""
+        self.user_say_no = False  # Flag, um zu verhindern, dass der Nutzer mehrfach gefragt wird, wenn er einmal "Nein" gesagt hat
         self.aprs_icon_cache = {}
         self.home_marker = None
         self.wx_history = []
@@ -543,7 +550,7 @@ class NoFuSTX:
     def _get_local_tile_count(self):
         """Zählt, wie viele Kartenkacheln wir aktuell haben"""
         db_path = os.path.join(base_path, "off_Maps", "offline_tiles.db")
-        print(f"[LAN-Sync] Überprüfe lokale Tiles in {db_path}")
+        # print(f"[LAN-Sync] Überprüfe lokale Tiles in {db_path}")
         if not os.path.exists(db_path): return 0
         try:
             conn = sqlite3.connect(db_path)
@@ -601,46 +608,137 @@ class NoFuSTX:
         """Lauscht auf andere NoFuS-Stationen"""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind(('', 5005))
-        
         while True:
             try:
                 data, addr = sock.recvfrom(1024)
                 info = json.loads(data.decode('utf-8'))
-                print(f" Varriable info: {info}")
+                
                 if info.get("app") == "NoFuS-TX":
                     remote_call = info.get("call", "Unbekannt")
                     remote_tiles = info.get("tiles", 0)
                     local_tiles = self._get_local_tile_count()
 
-                    # Wenn der Partner mehr Tiles hat, zeigen wir das an!
+                    # Wenn der Partner mehr Tiles hat als wir...
                     if remote_tiles > local_tiles:
-                        self.sync_icon.config(text="🟢", fg="green")
-                        self.sync_label.config(text=f"Update von {remote_call} verfügbar!")
-                        print(f"[LAN-Sync] Update von {remote_call} verfügbar!")
-                        print(f"[LAN-Sync] Lokale Tiles: {local_tiles}, Partner-Tiles: {remote_tiles}")
-                        print(f"[LAN-Sync] Partner Adresse: http://{info.get('ip')}:{info.get('port')}/off_Maps/offline_tiles.db")
-                        #self.merge_tiles(f"http://{info.get('ip')}:{info.get('port')}/off_Maps/offline_tiles.db")
-                    else:
+                        # Bereite die vollständige HTTP-URL des Partners vor
+                        partner_url = f"http://{info.get('ip')}:{info.get('port')}/off_Maps/offline_tiles.db"
+                        
+                        if not self.user_say_no:
+                            # 1. UI auf Grün setzen: Update steht bereit!
+                            self.sync_icon.config(text="🟢", fg="green")
+                            self.sync_label.config(text=f"Update von {remote_call} verfügbar!")
+                            
+                            # 2. Direkt die schlaue merge_tiles aufrufen. 
+                            # Sie prüft den Speicher und fragt den Operator mit exakten MB-Angaben!
+                            self.merge_tiles(partner_url)
+                        else:
+                            # Der Nutzer hat für diese Session bereits einmal "Nein" gesagt
+                            self.sync_icon.config(text="🔴", fg="red")
+                            self.sync_label.config(text=f"Update von {remote_call} blockiert")
+                            
+                    elif remote_tiles <= local_tiles:
+                        # Wir sind aktuell oder haben sogar mehr Daten als der Partner
                         self.sync_icon.config(text="🔵", fg="blue")
                         self.sync_label.config(text=f"Partner: {remote_call} (OK)")
-            except Exception: pass
+                        
+            except Exception: 
+                pass
 
-    def merge_tiles(self, other_db_path):
-        """Führt fremde Tiles in die eigene DB ein (INSERT OR IGNORE)"""
+    def merge_tiles(self, other_db_url):
+        """Prüft den Speicherplatz, fragt den User und führt fremde Tiles ein."""
+          # Für die Speicherplatz-Prüfung
+        
         local_db = os.path.join(base_path, "off_Maps", "offline_tiles.db")
-        print(f"[LAN-Sync] Führe Tiles aus {other_db_path} in lokale DB {local_db} ein...")
+        temp_remote_db = os.path.join(base_path, "off_Maps", "remote_temp.db")
+        
+        print(f"[LAN-Sync] Frage Metadaten von {other_db_url} ab...")
+        self.sync_label.config(text="Prüfe Remote-DB...")
+        self.root.update_idletasks()
+
         try:
+            # 1. Dateigröße der Partner-DB über das Netzwerk ermitteln (HTTP HEAD Request)
+            req = urllib.request.Request(other_db_url, method='HEAD')
+            with urllib.request.urlopen(req, timeout=5) as response:
+                # Holt die Größe in Bytes (Standardwert 0 falls nicht lesbar)
+                remote_size_bytes = int(response.headers.get('Content-Length', 0))
+            
+            remote_size_mb = remote_size_bytes / (1024 * 1024)
+            
+            # 2. Freien Speicherplatz auf der lokalen Festplatte ermitteln
+            # shutil.disk_usage gibt (total, used, free) in Bytes zurück
+            _, _, free_space_bytes = shutil.disk_usage(base_path)
+            free_space_mb = free_space_bytes / (1024 * 1024)
+
+            print(f"[LAN-Sync] Partner-DB: {remote_size_mb:.2f} MB | Freier Speicher: {free_space_mb:.2f} MB")
+
+            # 3. Sicherheitsnetz: Reicht der Platz überhaupt?
+            # Wir fordern zur Sicherheit das Doppelte der Dateigröße (für Download + SQLite-Merge)
+            if free_space_mb < (remote_size_mb * 2):
+                messagebox.showerror(
+                    "Speicherplatz-Warnung", 
+                    f"Abgleich abgebrochen!\n\n"
+                    f"Die Partner-Datenbank ist {remote_size_mb:.1f} MB groß.\n"
+                    f"Du hast nur noch {free_space_mb:.1f} MB freien Speicherplatz.\n"
+                    f"Das ist zu riskant für das System."
+                )
+                self.sync_icon.config(text="🔴", fg="red")
+                self.sync_label.config(text="Mangelnder Speicher!")
+                return
+
+            # 4. Der gewünschte Dialog: Operator explizit mit Größenangabe fragen
+            frage_text = (
+                f"Die Karten-Datenbank des Partners ist {remote_size_mb:.1f} MB groß.\n"
+                f"Dein freier Speicherplatz: {free_space_mb:.1f} MB.\n\n"
+                f"Möchtest du den Download und den Abgleich jetzt starten?"
+            )
+            
+            if not messagebox.askyesno("LAN-Sync Bestätigung", frage_text):
+                print("[LAN-Sync] Download vom Benutzer aufgrund der Dateigröße abgelehnt.")
+                self.user_say_no = True
+                self.sync_icon.config(text="🔴", fg="red")
+                self.sync_label.config(text="Sync abgelehnt")
+                return
+
+            # 5. AB HIER STARTET DER ECHTE DOWNLOAD (Sichergestellt: Genug Platz & User will es)
+            print(f"[LAN-Sync] Starte Download von {remote_size_mb:.2f} MB...")
+            self.sync_label.config(text=f"Lade {remote_size_mb:.1f}MB herunter...")
+            self.root.update_idletasks()
+
+            urllib.request.urlretrieve(other_db_url, temp_remote_db)
+            
+            print(f"[LAN-Sync] Download abgeschlossen. Starte SQLite-Merge...")
+            self.sync_label.config(text="Führe Karten zusammen...")
+            self.root.update_idletasks()
+
+            # Verbindung herstellen und zusammenführen
             conn = sqlite3.connect(local_db)
-            conn.execute(f"ATTACH DATABASE '{other_db_path}' AS remote")
+            conn.execute(f"ATTACH DATABASE '{temp_remote_db}' AS remote")
             conn.execute("INSERT OR IGNORE INTO tiles SELECT * FROM remote.tiles")
             conn.commit()
             conn.execute("DETACH DATABASE remote")
             conn.close()
-            self.update_sync_ui("idle") # type: ignore
+            
+            print("[LAN-Sync] Kartenabgleich erfolgreich abgeschlossen!")
             messagebox.showinfo("Sync", "Karten erfolgreich abgeglichen!")
-            self.write_session_log(f"[{self.utc_iso_timestamp()}] Karten von {other_db_path} erfolgreich abgeglichen.")
+            self.write_session_log(f"[{self.utc_iso_timestamp()}] Karten von {other_db_url} ({remote_size_mb:.1f} MB) erfolgreich abgeglichen.")
+            
+            self.sync_icon.config(text="🔵", fg="blue")
+            self.sync_label.config(text="LAN-Sync: Idle")
+
         except Exception as e:
-            messagebox.showerror("Sync Fehler", str(e))
+            messagebox.showerror("Sync Fehler", f"Fehler beim Kartenabgleich:\n{e}")
+            print(f"[LAN-Sync] Fehler beim Kartenabgleich: \n{e}\n")
+            self.sync_icon.config(text="🔴", fg="red")
+            self.sync_label.config(text="Sync Fehler!")
+            
+        finally:
+            # Sauber aufräumen
+            if os.path.exists(temp_remote_db):
+                try:
+                    os.remove(temp_remote_db)
+                    print("[LAN-Sync] Temporäre DB-Datei erfolgreich gelöscht.")
+                except Exception as e:
+                    print(f"[LAN-Sync] Warnung: Temp-Datei konnte nicht gelöscht werden: {e}")
 
     # --------- USERCALL SETZEN ----------
     def set_USERCALL(self, callsign="NOCALL"):
@@ -2048,11 +2146,6 @@ class NoFuSTX:
         datei_m.add_command(label="Einsatz-Log drucken", command=lambda: self.print_message("\n".join(self.log_list.get(0, tk.END))))
         datei_m.add_command(label="Rufzeichen setzen", command=self.set_USERCALL)
         datei_m.add_command(label="...Abhängigkeiten erneut Prüfen !", command=self.check_dependencies)
-
-        # KARTEN
-        map_m = tk.Menu(m, tearoff=0)
-        m.add_cascade(label="Kartenoptionen", menu=map_m)
-        map_m.add_command(label="Kartenupdate ausführen", command=messagebox.showinfo("Kartenupdate", "Die Karten werden im Hintergrund aktualisiert. Dies kann einige Minuten dauern."))
 
         # EINSTELLUNGEN
         settings_m = tk.Menu(m, tearoff=0)
@@ -4445,4 +4538,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = NoFuSTX(root)
     root.mainloop()
-    
+
