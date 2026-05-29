@@ -37,7 +37,6 @@ if os.path.exists(libs_path):
     
 # Jetzt können wir die Module importieren, die in libs liegen (z.B. pyjs8call, pyvara, etc.)
 import datetime
-
 import copy
 import json
 import subprocess
@@ -62,6 +61,10 @@ try:
     from tkintermapview.offline_loading import OfflineLoader
 except ImportError:
     tkintermapview = None
+try:
+    import psutil
+except ImportError:
+    psutil = None
 try:
     from PIL import Image, ImageTk  # Bildverarbeitung für Icons und Karten
 except ImportError:
@@ -486,6 +489,8 @@ class NoFuSTX:
             missing.append("PyHam_AX25")
         if fitz is None:
             missing.append("PyMuPDF (fitz)")
+        if psutil is None:
+            missing.append("psutil")
         if missing:
             install_cmd = "python -m pip install " + " ".join(
                 m.replace(" + ", " ").split()[0] for m in missing
@@ -1585,37 +1590,84 @@ class NoFuSTX:
 
     # --------- UI-AUFBAU & -ELEMENTE ----------
     def setup_ui(self):
+        # 1. Menü initialisieren
         self.setup_menu()
-        self.status_bar = tk.Frame(self.root, relief=tk.SUNKEN, bd=1)
+        
+        # 2. Statusleiste unten aufbauen
         self.status_bar = tk.Frame(self.root, relief=tk.SUNKEN, bd=1)
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
         self.status_bar.grid_columnconfigure(2, weight=1)
+        
         # Aktueller Reiter und ZoomLevel
         self.zoom_label = tk.Label(self.status_bar, text="Zoom: 100%", font=("Courier", 10))
         self.zoom_label.grid(row=0, column=0, padx=10, sticky="w")
+        
         # RX bereich
         self.rx_label = tk.Label(self.status_bar, text="RX Modus:", font=("Courier", 10))
         self.rx_label.grid(row=0, column=1, padx=10, sticky="w")
-        # RX Auswahl
+        
+        # RX Auswahl aus der Config laden
         rx_modes = ["Kein RX"]
         for rx_mode, data in self.config["MODES"].items():
-            # Alle aktiven Modi für Text-Übertragung anbieten
             if rx_mode in ("RTTY", "WINLINK", "JS8CALL", "VARA", "MT63") and data.get("active"):
                 rx_modes.append(rx_mode)
+                
         self.rx_combo = ttk.Combobox(self.status_bar, values=rx_modes, state="readonly", width=12, font=("Courier", 10))
-        self.rx_combo.current(0) # Standardmäßig auf "Kein RX" (Index 0) setzen
+        self.rx_combo.current(0)
         self.rx_combo.grid(row=0, column=2, padx=(0, 10), sticky="w")
         self.rx_combo.bind("<<ComboboxSelected>>", self.simple_rx)
+        
         # Sync-Status der Tiles
         self.sync_container = tk.Frame(self.status_bar)
         self.sync_container.grid(row=0, column=3, padx=10, sticky="ew")
+        
         # Zeitanzeige unten Rechts
         self.time_label = tk.Label(self.status_bar, text="12:00:00", font=("Courier", 10, "bold"))
         self.time_label.grid(row=0, column=4, padx=10, sticky="e")
+        
         self.init_lan_sync(self.sync_container)
         self.update_clock()
+
+        # =====================================================================
+        # 3. HIER NEU: DER TELEMETRIE-BALKEN (ZENTRIERTE MESSWERTE)
+        # Ssitzt direkt unter dem Menü und über den Tabs
+        # =====================================================================
+        self.telemetry_bar = tk.Frame(self.root, bg="#000A00", height=24, relief=tk.RIDGE, bd=1)
+        self.telemetry_bar.pack(side=tk.TOP, fill=tk.X)
+
+        # Spalten-Gewichtung für perfekte Zentrierung im Fenster
+        self.telemetry_bar.grid_columnconfigure(0, weight=1)
+        self.telemetry_bar.grid_columnconfigure(2, weight=1)
+
+        # Zentraler innerer Container für die Labels
+        self.sys_monitor_container = tk.Frame(self.telemetry_bar, bg="#000A00")
+        self.sys_monitor_container.grid(row=0, column=1, pady=2)
+
+        # Die Telemetrie-Labels (U1 bis U4 + CPU) nebeneinander packen
+        self.lbl_u1 = tk.Label(self.sys_monitor_container, text="Batterie: na.", fg="#00FF00", bg="#000A00", font=("Courier", 10, "bold"))
+        self.lbl_u1.pack(side=tk.LEFT, padx=8)
+
+        self.lbl_u2 = tk.Label(self.sys_monitor_container, text="Solarenergie: na.", fg="#00FF00", bg="#000A00", font=("Courier", 10, "bold"))
+        self.lbl_u2.pack(side=tk.LEFT, padx=8)
+
+        self.lbl_u3 = tk.Label(self.sys_monitor_container, text="Ausgabe U1: na.", fg="#00FF00", bg="#000A00", font=("Courier", 10, "bold"))
+        self.lbl_u3.pack(side=tk.LEFT, padx=8)
+
+        self.lbl_u4 = tk.Label(self.sys_monitor_container, text="Ausgabe U2: na.", fg="#00FF00", bg="#000A00", font=("Courier", 10, "bold"))
+        self.lbl_u4.pack(side=tk.LEFT, padx=8)
+
+        # Optischer Trenner vor der CPU
+        lbl_sep = tk.Label(self.sys_monitor_container, text="|", fg="#00FF00", bg="#000A00", font=("Courier", 10))
+        lbl_sep.pack(side=tk.LEFT, padx=4)
+
+        self.lbl_cpu = tk.Label(self.sys_monitor_container, text="CPU: na.", fg="#00FF00", bg="#000A00", font=("Courier", 10, "bold"))
+        self.lbl_cpu.pack(side=tk.LEFT, padx=8)
+        # =====================================================================
+
+        # 4. Ab hier folgen wie gewohnt die Notebook-Reiter
         self.tabs = ttk.Notebook(self.root)
         self.tabs.pack(expand=1, fill="both")
+        
         self.tab_map = ttk.Frame(self.tabs)
         self.tab_fundus = ttk.Frame(self.tabs)
         self.tab_msg = ttk.Frame(self.tabs)
@@ -1625,6 +1677,7 @@ class NoFuSTX:
         self.tab_sdr = ttk.Frame(self.tabs)
         self.tab_os_terminal = ttk.Frame(self.tabs)
         self.tab_log = ttk.Frame(self.tabs)
+        
         self.tabs.add(self.tab_map, text="Lagekarte")
         self.tabs.add(self.tab_fundus, text="Fundus / Personal")
         self.tabs.add(self.tab_msg, text="Not-Mitteilung (IARU)")
@@ -1634,12 +1687,15 @@ class NoFuSTX:
         self.tabs.add(self.tab_sdr, text="SDR")
         self.tabs.add(self.tab_os_terminal, text="OS-Terminal")
         self.tabs.add(self.tab_log, text="Einsatz-Log")
+        
+        # UI-Inhalte initialisieren
         self.setup_map_view()
         self.setup_fundus_tab()
         self.setup_message_tab()
         self.setup_weather_tab()
         self.setup_digimode_terminals()
         self.setup_help_and_info_tabs()
+        
         if self.chk_sdr() == False:
             self.setup_sdr_tab()
         else:
@@ -1648,7 +1704,7 @@ class NoFuSTX:
         self.setup_os_terminal_tab()
         self.setup_log_tab()
 
-        # Wenn APRS-IS konfiguriert ist, beim Start automatisch Marker setzen
+        # Karten-Initialisierung
         self.update_aprs_on_map_initial()
         self.get_current_map_zoom()
     
@@ -1984,6 +2040,7 @@ class NoFuSTX:
         m.add_cascade(label="Hilfe", menu=help_m)
         help_m.add_command(label="Hilfe & Handbuch", command=self.show_manual_window)
         help_m.add_command(label="Über NoFuS-TX", command=self.show_about_window)      
+
 
     def show_manual_window(self):
         try:
@@ -3655,8 +3712,16 @@ class NoFuSTX:
             pass
         else:
             self.zoom_label.config(text=f"{current_tab_text}")
+        self.cpu_usage()
         self.root.after(2000, self.get_current_map_zoom)  # Alle 2 Sekunden aktualisieren
 
+    def cpu_usage(self):
+        mem = psutil.virtual_memory()
+        if psutil is not None:
+            usage = psutil.cpu_percent(interval=1)
+            self.lbl_cpu.config(text=f"CPU: {usage}% | RAM: {mem.percent}%")
+        else:
+            self.lbl_cpu.config(text="CPU: N/A")
     # --- Meshtastic integration --- #
     def init_meshtastic_hardware(self):
         try:
