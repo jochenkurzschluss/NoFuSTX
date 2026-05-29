@@ -538,10 +538,12 @@ class NoFuSTX:
         threading.Thread(target=self._run_broadcast_listener, daemon=True).start()
         threading.Thread(target=self._run_http_server, daemon=True).start()
         self.write_session_log(f"[{self.utc_iso_timestamp()}] LAN-Sync initialisiert. Hintergrunddienste gestartet.")
+        print("[LAN-Sync] Initialisiert: Broadcast-Sender, Broadcast-Listener und HTTP-Server laufen im Hintergrund.")
 
     def _get_local_tile_count(self):
         """Zählt, wie viele Kartenkacheln wir aktuell haben"""
-        db_path = os.path.join(base_path, "offline_tiles.db")
+        db_path = os.path.join(base_path, "off_Maps", "offline_tiles.db")
+        print(f"[LAN-Sync] Überprüfe lokale Tiles in {db_path}")
         if not os.path.exists(db_path): return 0
         try:
             conn = sqlite3.connect(db_path)
@@ -552,7 +554,7 @@ class NoFuSTX:
 
     def _run_http_server(self):
         """Stellt die offline_tiles.db via HTTP bereit"""
-        port = 8080
+        port = 27245
         # Es braucht einen Handler, der nur die tiles.db ausliefert
         os.chdir(base_path) 
         handler = http.server.SimpleHTTPRequestHandler
@@ -566,6 +568,17 @@ class NoFuSTX:
         """Kündigt alle 15 Sekunden im Netzwerk an"""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        def test_my_ip():
+            try:
+                # Erstellt einen UDP-Socket
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                # Verbindet sich mit einem beliebigen externen Server (muss nicht erreichbar sein)
+                s.connect(("8.8.8.8", 80))
+                ip_address = s.getsockname()[0]
+                s.close()
+            except Exception:
+                ip_address = "0.0.0.0"
+            return ip_address
         
         while True:
             try:
@@ -574,13 +587,15 @@ class NoFuSTX:
                     "app": "NoFuS-TX",
                     "call": my_call,
                     "tiles": self._get_local_tile_count(),
-                    "ip": socket.gethostbyname(socket.gethostname()),
-                    "port": 8080
+                    #"ip": socket.gethostbyname(socket.gethostname()),
+                    "ip": test_my_ip(),
+                    "port": 27245
                 }
                 msg = json.dumps(info).encode('utf-8')
                 sock.sendto(msg, ('<broadcast>', 5005))
             except Exception: pass
             time.sleep(15)
+    
 
     def _run_broadcast_listener(self):
         """Lauscht auf andere NoFuS-Stationen"""
@@ -591,7 +606,7 @@ class NoFuSTX:
             try:
                 data, addr = sock.recvfrom(1024)
                 info = json.loads(data.decode('utf-8'))
-                
+                print(f" Varriable info: {info}")
                 if info.get("app") == "NoFuS-TX":
                     remote_call = info.get("call", "Unbekannt")
                     remote_tiles = info.get("tiles", 0)
@@ -601,6 +616,10 @@ class NoFuSTX:
                     if remote_tiles > local_tiles:
                         self.sync_icon.config(text="🟢", fg="green")
                         self.sync_label.config(text=f"Update von {remote_call} verfügbar!")
+                        print(f"[LAN-Sync] Update von {remote_call} verfügbar!")
+                        print(f"[LAN-Sync] Lokale Tiles: {local_tiles}, Partner-Tiles: {remote_tiles}")
+                        print(f"[LAN-Sync] Partner Adresse: http://{info.get('ip')}:{info.get('port')}/off_Maps/offline_tiles.db")
+                        #self.merge_tiles(f"http://{info.get('ip')}:{info.get('port')}/off_Maps/offline_tiles.db")
                     else:
                         self.sync_icon.config(text="🔵", fg="blue")
                         self.sync_label.config(text=f"Partner: {remote_call} (OK)")
@@ -608,7 +627,8 @@ class NoFuSTX:
 
     def merge_tiles(self, other_db_path):
         """Führt fremde Tiles in die eigene DB ein (INSERT OR IGNORE)"""
-        local_db = os.path.join(base_path, "offline_tiles.db")
+        local_db = os.path.join(base_path, "off_Maps", "offline_tiles.db")
+        print(f"[LAN-Sync] Führe Tiles aus {other_db_path} in lokale DB {local_db} ein...")
         try:
             conn = sqlite3.connect(local_db)
             conn.execute(f"ATTACH DATABASE '{other_db_path}' AS remote")
@@ -2028,6 +2048,11 @@ class NoFuSTX:
         datei_m.add_command(label="Einsatz-Log drucken", command=lambda: self.print_message("\n".join(self.log_list.get(0, tk.END))))
         datei_m.add_command(label="Rufzeichen setzen", command=self.set_USERCALL)
         datei_m.add_command(label="...Abhängigkeiten erneut Prüfen !", command=self.check_dependencies)
+
+        # KARTEN
+        map_m = tk.Menu(m, tearoff=0)
+        m.add_cascade(label="Kartenoptionen", menu=map_m)
+        map_m.add_command(label="Kartenupdate ausführen", command=messagebox.showinfo("Kartenupdate", "Die Karten werden im Hintergrund aktualisiert. Dies kann einige Minuten dauern."))
 
         # EINSTELLUNGEN
         settings_m = tk.Menu(m, tearoff=0)
@@ -4420,3 +4445,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = NoFuSTX(root)
     root.mainloop()
+    
