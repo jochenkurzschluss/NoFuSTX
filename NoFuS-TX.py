@@ -16,7 +16,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 # =============================================================================
 # =============================================================================
-# NoFuS-TX - IMPORT SEKTION (v1.9.16a)
+# NoFuS-TX - IMPORT SEKTION (v1.9.16b)
 # Unterstützt: APRS, JS8Call, VARA, Winlink, MT63, RTTY, SSTV, FAX, AX.25
 # Plattformen: Windows, Linux, macOS
 # =============================================================================
@@ -33,10 +33,12 @@ if os.path.exists(libs_path):
     # Wir schieben unseren libs-Ordner an Position 0 der Suchliste
     sys.path.insert(0, libs_path)
     # Debug-Ausgabe in der Konsole
-    print(f"[Lib] NoFuS-TX Portable-Modus: Nutze lokale Libs aus {libs_path}")
+    INFOECHO = f"[Lib] NoFuS-TX Portable-Modus: Nutze lokale Libs aus {libs_path}"
+    
 # Jetzt können wir die Module importieren, die in libs liegen (z.B. pyjs8call, pyvara, etc.)
 import datetime
 
+import copy
 import json
 import subprocess
 import platform
@@ -51,6 +53,7 @@ import math  # Neu: Für Kreisberechnungen (Radius)
 import glob
 import http.server
 import socketserver
+from typing import Any, cast
 # --- 2. Grafische Benutzeroberfläche & Karten (GUI) ---
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -127,34 +130,32 @@ except ImportError:
 '''
 try:
     import ax25
-except ImportError:
-    ax25 = None
-try:
     import ax25.netrom
-except ImportError:
-    ax25 = None
-try:
     import ax25.ports
-except ImportError:
-    ax25 = None
-try:
     import ax25.socket
+    # Optional: Falls du das veraltete Modul auch direkt abfangen willst
+    # import ax25old # Falls jemand die alte Version installiert hat, um Konflikte zu vermeiden
 except ImportError:
     ax25 = None
+    ax25old = None
 try:
     import meshtastic
-    import meshtastic.serial_interface
-    import meshtastic.mesh_interface
-    import pubsub 
+    import meshtastic.serial_interface as meshtastic_serial_interface
+    import meshtastic.mesh_interface as meshtastic_mesh_interface
+    import pubsub
     from pubsub import pub  # Für die Kommunikation mit Meshtastic-Threads
 except ImportError:
-        meshtastic = None
+    meshtastic = None
+    meshtastic_serial_interface = None
+    meshtastic_mesh_interface = None
+    pubsub = None
+    pub = None
 
 # Hauptklasse der Anwendung
 class NoFuSTX:
     def __init__(self, root):
         self.root = root
-        self.root.title("NoFuS-TX - Einsatzleitsoftware v1.9.16a")
+        self.root.title("NoFuS-TX - Einsatzleitsoftware v1.9.16b")
         try:
             # Wir laden das PNG als PhotoImage
             icon_img = tk.PhotoImage(file="icons/NoFuSTX.png")
@@ -180,6 +181,11 @@ class NoFuSTX:
         # APRS-Lage: Marker- und Update-Verwaltung
         self.aprs_update_queue = queue.Queue()
         self.aprs_markers = {}
+        self.fldigi_client = None
+        self.fldigi_app = None
+        self.fldigi_polling_active = False  # Flag gegen doppelte Polling-Timer
+        self.fldigi_after_id = None  # ID des laufenden after()-Timers
+        self.recive_buffer = ""
         self.aprs_icon_cache = {}
         self.home_marker = None
         self.wx_history = []
@@ -219,6 +225,8 @@ class NoFuSTX:
                     "rms_server": "cms.winlink.org",
                     "port": "8772",
                     "call": "NOCALL",
+                    "use_fldigi": True,
+                    "fldigi_modem": "PSK500",
                 },
                 "LORA_MESH": {
                     "active": True,
@@ -231,30 +239,46 @@ class NoFuSTX:
                     "bps": "45.45",
                     "shift": "170",
                     "soundcard": "System",
+                    "use_fldigi": True,
+                    "fldigi_modem": "RTTY",
                 },
                 "SSTV": {
                     "active": False,
                     "mode": "Martin 1",
                     "soundcard": "System Standard",
+                    "use_fldigi": True,
+                    "fldigi_modem": "SSB",
                 },
-                "FAX": {"active": False, "lpm": "120", "ioc": "576"},
+                "FAX": {
+                    "active": False,
+                    "lpm": "120",
+                    "ioc": "576",
+                    "use_fldigi": True,
+                    "fldigi_modem": "WEFAX576",
+                },
                 "JS8CALL": {
                     "active": False,
                     "frequency": "7.078 MHz",  # Typische JS8Call-Frequenz
                     "callsign": "NOCALL",
                     "soundcard": "System",
+                    "use_fldigi": True,
+                    "fldigi_modem": "BPSK31",
                 },
                 "VARA": {
                     "active": False,
                     "frequency": "14.105 MHz",  # Typische VARA-Frequenz
                     "callsign": "NOCALL",
                     "soundcard": "System",
+                    "use_fldigi": True,
+                    "fldigi_modem": "SSB",
                 },
                 "MT63": {
                     "active": False,
                     "frequency": "7.040 MHz",  # Typische MT63-Frequenz
                     "bandwidth": "1k",  # z. B. 500Hz, 1k, 2k
                     "soundcard": "System",
+                    "use_fldigi": True,
+                    "fldigi_modem": "MT63-1KS",
                 },
             },
             "PRINTER": {"name": "Standard-Thermo", "auto_print": False},
@@ -264,6 +288,12 @@ class NoFuSTX:
                 {"name": "Trupp A", "type": "NoFuS-P", "status": False},
                 {"name": "Trupp B", "type": "NoFuS-P", "status": False},
             ],
+            #GUI Einstellungen
+            "GUI": {
+                "debug": False,
+                "equip_check": False,
+                "if_mesh_gps": False,
+                },
             # Standard-Lagekarte: ca. 10 km Radius um 51.9621817 / 9.6509120
             "MAP": {
                 "center_lat": 51.9621817,
@@ -308,6 +338,15 @@ class NoFuSTX:
         
         self.load_settings()
         self.load_frequencies()
+        
+        # Wenn in deiner Config eingestellt ist, dass Debug AUS sein soll:
+        if not self.config.get("GUI", {}).get("debug", False):
+            # Wir leiten alle Standard-Ausgaben (sys.stdout) in das Null-Gerät des Betriebssystems um
+            sys.stdout = open(os.devnull, 'w')
+            
+            # Optional: Wenn du auch Fehlermeldungen unterdrücken willst (Vorsicht im Beta-Test!)
+            sys.stderr = open(os.devnull, 'w')
+        print(INFOECHO)  # Diese Zeile wird nur angezeigt, wenn Debug in der Config aktiviert ist
         self.counter_number_msg = self.load_message_counter()
         self.init_session_log()
         if not self.config.get("DEPENDENCIES", {}).get("is_read", 0):
@@ -318,25 +357,75 @@ class NoFuSTX:
             self.save_settings()
         self.setup_ui()
         self.mesh_connected = False
-        self.interface = None
+        self.interface: Any = None
+        self.mesh_home_auto_updated = False
 
         # Prüfen, ob LORA_MESH in deiner Config aktiv geschaltet ist
         if self.config["MODES"].get("LORA_MESH", {}).get("active"):
             print("[Mesh] Konfiguration aktiv. Starte Hardware-Suche...")
             self.init_meshtastic_hardware()
+            self.mesh_gps_pos()
         self.init_aprs_system()
-
-        #try:
-            #self.interface = meshtastic.serial_interface.SerialInterface()
-        #except Exception as e:
-            #print(f"Fehler beim Initialisieren der Meshtastic-Verbindung: {e}")
-        #pub.subscribe(self.on_receive, "meshtastic.receive")
-        # self.start_monitor_thread()
-        #self.meshtastic_test()  # Teste die Meshtastic-Verbindung beim Start (optional, kann später in ein separates Menü verschoben werden)
-
-        
+        if self.config.get("GUI", {}).get("equip_check", True):
+            self.check_equip()
 
     # --------- KONFIGURATIONSLADUNG & -SPEICHERUNG ----------
+    def _repair_config_structure(self, config: Any, defaults: Any) -> bool:
+        """
+        Aktualisiert eine geladene Config dynamisch mit den aktuellen Default-Werten.
+        Erhält bestehende Nutzerdaten, ergänzt aber fehlende oder kaputte Bereiche.
+        """
+        changed = False
+
+        if not isinstance(config, dict) or not isinstance(defaults, dict):
+            return True
+
+        for key, default_value in defaults.items():
+            if key not in config or config[key] is None:
+                config[key] = copy.deepcopy(default_value)
+                changed = True
+                continue
+
+            current_value = config[key]
+
+            if isinstance(default_value, dict):
+                if not isinstance(current_value, dict):
+                    config[key] = copy.deepcopy(default_value)
+                    changed = True
+                    continue
+                changed = self._repair_config_structure(current_value, default_value) or changed
+                continue
+
+            if isinstance(default_value, list):
+                if not isinstance(current_value, list):
+                    config[key] = copy.deepcopy(default_value)
+                    changed = True
+                    continue
+
+                if default_value and isinstance(default_value[0], dict) and isinstance(current_value, list):
+                    merged_list = []
+                    for item in current_value:
+                        if isinstance(item, dict):
+                            template = copy.deepcopy(default_value[0])
+                            template.update(item)
+                            merged_list.append(template)
+                        else:
+                            merged_list.append(copy.deepcopy(default_value[0]))
+
+                    if len(merged_list) < len(default_value):
+                        merged_list.extend(copy.deepcopy(default_value[len(merged_list):]))
+
+                    if merged_list != current_value:
+                        config[key] = merged_list
+                        changed = True
+                continue
+
+            if type(current_value) is not type(default_value):
+                config[key] = copy.deepcopy(default_value)
+                changed = True
+
+        return changed
+
     def load_settings(self):
         if not os.path.exists(self.config_file):
             legacy_config = os.path.join(base_path, "nofustx_config.json")
@@ -345,70 +434,23 @@ class NoFuSTX:
                     with open(legacy_config, "r") as f:
                         self.config = json.load(f)
                 except Exception:
-                    self.config = self.default_config
+                    self.config = copy.deepcopy(self.default_config)
             else:
-                self.config = self.default_config
+                self.config = copy.deepcopy(self.default_config)
+
+            self._repair_config_structure(self.config, self.default_config)
             self.save_settings()
-        else:
-            try:
-                with open(self.config_file, "r") as f:
-                    self.config = json.load(f)
+            return
 
-                # Fehlende Bereiche aus Default ergänzen
-                if "MODES" not in self.config:
-                    self.config["MODES"] = self.default_config["MODES"]
-                else:
-                    # Fehlende Modi hinzufügen
-                    for mode, params in self.default_config["MODES"].items():
-                        if mode not in self.config["MODES"]:
-                            self.config["MODES"][mode] = params
-                if "PRINTER" not in self.config:
-                    self.config["PRINTER"] = self.default_config["PRINTER"]
-                if "MAP" not in self.config:
-                    self.config["MAP"] = self.default_config["MAP"]
+        try:
+            with open(self.config_file, "r") as f:
+                self.config = json.load(f)
 
-                # APRS Passcode sicherstellen
-                if (
-                    "APRS_IS" in self.config["MODES"]
-                    and "passcode" not in self.config["MODES"]["APRS_IS"]
-                ):
-                    self.config["MODES"]["APRS_IS"]["passcode"] = "00000"
-
-                # SSTV Soundkarte sicherstellen
-                if (
-                    "SSTV" in self.config["MODES"]
-                    and "soundcard" not in self.config["MODES"]["SSTV"]
-                ):
-                    self.config["MODES"]["SSTV"]["soundcard"] = "System Standard"
-
-                # RTTY Soundkarte sicherstellen
-                if (
-                    "RTTY" in self.config["MODES"]
-                    and "soundcard" not in self.config["MODES"]["RTTY"]
-                ):
-                    self.config["MODES"]["RTTY"]["soundcard"] = "System"
-
-                # USERCALL-Bereich sicherstellen
-                if "USERCALL" not in self.config:
-                    self.config["USERCALL"] = {"CALLSINGEN": "NOCALL"}
-                elif "CALLSINGEN" not in self.config["USERCALL"]:
-                    self.config["USERCALL"]["CALLSINGEN"] = "NOCALL"
-
-                # IARU-Zähler sicherstellen
-                if "IARU" not in self.config:
-                    self.config["IARU"] = {"next_message_number": 1}
-                elif "next_message_number" not in self.config["IARU"]:
-                    self.config["IARU"]["next_message_number"] = 1
-
-                # SDR-Bereich sicherstellen
-                if "SDR" not in self.config:
-                    self.config["SDR"] = self.default_config["SDR"]
-                else:
-                    for key, value in self.default_config["SDR"].items():
-                        if key not in self.config["SDR"]:
-                            self.config["SDR"][key] = value
-            except Exception:
-                self.config = self.default_config
+            if self._repair_config_structure(self.config, self.default_config):
+                self.save_settings()
+        except Exception:
+            self.config = copy.deepcopy(self.default_config)
+            self.save_settings()
         
     def check_dependencies(self):
         missing = []
@@ -477,13 +519,13 @@ class NoFuSTX:
     def init_lan_sync(self, statusbar_parent):
         """Initialisiert das UI-Widget und startet die Hintergrund-Dienste"""
         # 1. UI Widget in der Mitte der Statusleiste
-        self.sync_frame = tk.Frame(statusbar_parent, bd=1, relief="sunken", bg="gray90")
+        self.sync_frame = tk.Frame(statusbar_parent, bd=1, relief="sunken", bg="black")
         self.sync_frame.pack(side="left", expand=True, padx=10) # expand=True schiebt es in die Mitte
 
-        self.sync_icon = tk.Label(self.sync_frame, text="🔵", bg="gray90")
+        self.sync_icon = tk.Label(self.sync_frame, text="🔵", bg="black")
         self.sync_icon.pack(side="left", padx=2)
 
-        self.sync_label = tk.Label(self.sync_frame, text="LAN-Sync: Idle", font=("Arial", 8), bg="gray90")
+        self.sync_label = tk.Label(self.sync_frame, text="LAN-Sync: Idle", font=("Arial", 8), bg="black")
         self.sync_label.pack(side="left", padx=5)
 
         # 2. Threads starten
@@ -765,7 +807,7 @@ class NoFuSTX:
                 home_image = self.get_home_image()
                 marker_kwargs = {}
                 if home_image is not None:
-                    marker_kwargs["image"] = home_image
+                    marker_kwargs["icon"] = home_image
                 self.home_marker = self.map_widget.set_marker(
                     lat, lon, text="HOME", **marker_kwargs
                 )
@@ -867,10 +909,12 @@ class NoFuSTX:
         if not marker:
             return
 
-        # 1) Default-Shape ausblenden (je nach tkintermapview-Version könnte das ein Kreis oder Dreieck sein)
+        # 1) Standardformen ausblenden, aber das eigentliche Icon sichtbar lassen.
         try:
-            # if hasattr(marker, "canvas_icon"): # Muss hier weiter geprüft werden ob es bei der Finlen Version schon andere Methoden gibt!
-                # self.map_widget.canvas.itemconfig(marker.canvas_icon, state="hidden")
+            if hasattr(marker, "canvas_icon"):
+                self.map_widget.canvas.itemconfig(marker.canvas_icon, state="normal")
+            if hasattr(marker, "polygon"):
+                self.map_widget.canvas.itemconfig(marker.polygon, state="hidden")
             if hasattr(marker, "big_circle"):
                 self.map_widget.canvas.itemconfig(marker.big_circle, state="hidden")
         except Exception:
@@ -883,6 +927,7 @@ class NoFuSTX:
                 h = image.height()
 
                 # **Icon als Icon (nicht image)**
+                marker.image = None
                 marker.icon = image
                 marker.icon_anchor = "center"  # punktgenau in der Mitte
                 marker.calculate_text_y_offset()  # damit die interne Offset-Berechnung passt
@@ -892,7 +937,9 @@ class NoFuSTX:
                     # Original zeichnen
                     orig_draw(event)
 
-                    # Text nach unten verschieben (unter das Icon)
+                    # Text nach unten verschieben (unter das Icon) und Icon garantieren sichtbar.
+                    if getattr(marker, "canvas_icon", None):
+                        self.map_widget.canvas.itemconfig(marker.canvas_icon, state="normal")
                     if getattr(marker, "canvas_text", None) and getattr(marker, "canvas_icon", None):
                         self.map_widget.canvas.itemconfig(marker.canvas_text, anchor="n")
                         x, y = self.map_widget.canvas.coords(marker.canvas_icon)
@@ -1539,19 +1586,36 @@ class NoFuSTX:
     # --------- UI-AUFBAU & -ELEMENTE ----------
     def setup_ui(self):
         self.setup_menu()
-
+        self.status_bar = tk.Frame(self.root, relief=tk.SUNKEN, bd=1)
         self.status_bar = tk.Frame(self.root, relief=tk.SUNKEN, bd=1)
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
-        self.time_label = tk.Label(self.status_bar, text="", font=("Courier", 10, "bold"))
-        self.time_label.pack(side=tk.RIGHT, padx=10)
-        self.zoom_label = tk.Label(self.status_bar, text="", font=("Courier", 10))
-        self.zoom_label.pack(side=tk.LEFT, padx=10)
-        self.init_lan_sync(self.status_bar)
+        self.status_bar.grid_columnconfigure(2, weight=1)
+        # Aktueller Reiter und ZoomLevel
+        self.zoom_label = tk.Label(self.status_bar, text="Zoom: 100%", font=("Courier", 10))
+        self.zoom_label.grid(row=0, column=0, padx=10, sticky="w")
+        # RX bereich
+        self.rx_label = tk.Label(self.status_bar, text="RX Modus:", font=("Courier", 10))
+        self.rx_label.grid(row=0, column=1, padx=10, sticky="w")
+        # RX Auswahl
+        rx_modes = ["Kein RX"]
+        for rx_mode, data in self.config["MODES"].items():
+            # Alle aktiven Modi für Text-Übertragung anbieten
+            if rx_mode in ("RTTY", "WINLINK", "JS8CALL", "VARA", "MT63") and data.get("active"):
+                rx_modes.append(rx_mode)
+        self.rx_combo = ttk.Combobox(self.status_bar, values=rx_modes, state="readonly", width=12, font=("Courier", 10))
+        self.rx_combo.current(0) # Standardmäßig auf "Kein RX" (Index 0) setzen
+        self.rx_combo.grid(row=0, column=2, padx=(0, 10), sticky="w")
+        self.rx_combo.bind("<<ComboboxSelected>>", self.simple_rx)
+        # Sync-Status der Tiles
+        self.sync_container = tk.Frame(self.status_bar)
+        self.sync_container.grid(row=0, column=3, padx=10, sticky="ew")
+        # Zeitanzeige unten Rechts
+        self.time_label = tk.Label(self.status_bar, text="12:00:00", font=("Courier", 10, "bold"))
+        self.time_label.grid(row=0, column=4, padx=10, sticky="e")
+        self.init_lan_sync(self.sync_container)
         self.update_clock()
-
         self.tabs = ttk.Notebook(self.root)
         self.tabs.pack(expand=1, fill="both")
-
         self.tab_map = ttk.Frame(self.tabs)
         self.tab_fundus = ttk.Frame(self.tabs)
         self.tab_msg = ttk.Frame(self.tabs)
@@ -1561,7 +1625,6 @@ class NoFuSTX:
         self.tab_sdr = ttk.Frame(self.tabs)
         self.tab_os_terminal = ttk.Frame(self.tabs)
         self.tab_log = ttk.Frame(self.tabs)
-
         self.tabs.add(self.tab_map, text="Lagekarte")
         self.tabs.add(self.tab_fundus, text="Fundus / Personal")
         self.tabs.add(self.tab_msg, text="Not-Mitteilung (IARU)")
@@ -1571,7 +1634,6 @@ class NoFuSTX:
         self.tabs.add(self.tab_sdr, text="SDR")
         self.tabs.add(self.tab_os_terminal, text="OS-Terminal")
         self.tabs.add(self.tab_log, text="Einsatz-Log")
-
         self.setup_map_view()
         self.setup_fundus_tab()
         self.setup_message_tab()
@@ -2540,7 +2602,7 @@ class NoFuSTX:
         header_f = ttk.LabelFrame(self.tab_msg, text="Kopfdaten (IARU Standard)")
         header_f.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
 
-        titles = ["Nummer", "Quelle / Station", "Wort-Zähler", "Herkunft", "Zeit (UTC)", "Datum"]
+        titles = ["Nummer", "Quelle / Station", "Wort-Zaehler", "Herkunft", "Zeit (UTC)", "Datum"]
         self.msg_fields = {}
 
         for i, title in enumerate(titles):
@@ -2703,7 +2765,7 @@ class NoFuSTX:
 
     # --- Wort-Zähler aktualisieren ---
     def update_word_count(self, event=None):
-     """Zählt die Wörter im Textfeld und schreibt sie in das Feld 'Wort-Zähler'."""
+     """Zählt die Wörter im Textfeld und schreibt sie in das Feld 'Wort-Zaehler'."""
      content = self.msg_text.get("1.0", tk.END).strip()
      if not content:
          count = 0
@@ -2711,7 +2773,7 @@ class NoFuSTX:
          # Zählt alles, was durch Leerzeichen getrennt ist
          count = len(content.split())
 
-     field = self.msg_fields["Wort-Zähler"]
+     field = self.msg_fields["Wort-Zaehler"]
      field.delete(0, tk.END)
      field.insert(0, str(count))
 
@@ -2735,7 +2797,7 @@ class NoFuSTX:
         about_win.title("Über NoFuS-TX")
         about_win.geometry("400x300")
 
-        tk.Label(about_win, text="NoFuS-TX - Einsatzleitsoftware v1.9.16a").pack(pady=10)
+        tk.Label(about_win, text="NoFuS-TX - Einsatzleitsoftware v1.9.16b").pack(pady=10)
         tk.Label(about_win, text="© 2026 NoFuS-TX DO2ITH").pack(pady=5)
         tk.Label(about_win, text="Alle Rechte vorbehalten.").pack(pady=10)
         tk.Label(about_win, text="E-Mail: info@ithnet.de").pack(pady=10)
@@ -2763,6 +2825,25 @@ class NoFuSTX:
 
         self.temp_entries = {}  # Initialisiere temp_entries
 
+        #GUI
+        gui_f = ttk.Frame(nb)
+        nb.add(gui_f, text="GUI")
+        params = self.config["GUI"]
+        self.temp_entries["GUI"] = {}
+
+        ttk.Label(gui_f, text="Oberfläche und Hintergrundfunktionen").pack()
+        d_gui = tk.BooleanVar(value=params.get("debug", False))
+        tk.Checkbutton(gui_f, text="Debugausgaben Anzeigen", variable=d_gui).pack(pady=10)
+        self.temp_entries["GUI"]["debug"] = d_gui
+        e_gui = tk.BooleanVar(value=params.get("equip_check", False))
+        tk.Checkbutton(gui_f, text="Equipmentprüfung Beim Start", variable=e_gui).pack(pady=10)
+        self.temp_entries["GUI"]["equip_check"] = e_gui
+        i_gui = tk.BooleanVar(value=params.get("if_mesh_gps", False))
+        tk.Checkbutton(gui_f, text="Wenn MeshGPS Home-Automatisieren", variable=i_gui).pack(pady=10)
+        self.temp_entries["GUI"]["if_mesh_gps"] = i_gui
+        c_gui = ttk.Button(gui_f, text="Rufzeichen Neu Setzen", command=self.set_USERCALL)
+        c_gui.pack(pady=10)
+
         # JS8Call
         js8_f = ttk.Frame(nb)
         nb.add(js8_f, text="JS8Call")
@@ -2778,6 +2859,16 @@ class NoFuSTX:
         freq_ent.insert(0, str(params.get("frequency", "7.078 MHz")))
         freq_ent.pack(pady=2)
         self.temp_entries["JS8CALL"]["frequency"] = freq_ent
+
+        f_use = tk.BooleanVar(value=params.get("use_fldigi", True))
+        tk.Checkbutton(js8_f, text="FLDIGI-Sendepfad aktiv", variable=f_use).pack(pady=5)
+        self.temp_entries["JS8CALL"]["use_fldigi"] = f_use
+
+        fldigi_modem = ttk.Entry(js8_f)
+        fldigi_modem.insert(0, str(params.get("fldigi_modem", "BPSK31")))
+        tk.Label(js8_f, text="FLDIGI-Modem:").pack(pady=2)
+        fldigi_modem.pack(pady=2)
+        self.temp_entries["JS8CALL"]["fldigi_modem"] = fldigi_modem
 
         tk.Label(js8_f, text="CALLSIGN:").pack()
         call_ent = ttk.Entry(js8_f)
@@ -2807,6 +2898,16 @@ class NoFuSTX:
         freq_ent.pack(pady=2)
         self.temp_entries["VARA"]["frequency"] = freq_ent
 
+        f_use = tk.BooleanVar(value=params.get("use_fldigi", True))
+        tk.Checkbutton(vara_f, text="FLDIGI-Sendepfad aktiv", variable=f_use).pack(pady=5)
+        self.temp_entries["VARA"]["use_fldigi"] = f_use
+
+        fldigi_modem = ttk.Entry(vara_f)
+        fldigi_modem.insert(0, str(params.get("fldigi_modem", "SSB")))
+        tk.Label(vara_f, text="FLDIGI-Modem:").pack(pady=2)
+        fldigi_modem.pack(pady=2)
+        self.temp_entries["VARA"]["fldigi_modem"] = fldigi_modem
+
         tk.Label(vara_f, text="CALLSIGN:").pack()
         call_ent = ttk.Entry(vara_f)
         call_ent.insert(0, str(params.get("callsign", "NOCALL")))
@@ -2834,6 +2935,16 @@ class NoFuSTX:
         freq_ent.insert(0, str(params.get("frequency", "7.040 MHz")))
         freq_ent.pack(pady=2)
         self.temp_entries["MT63"]["frequency"] = freq_ent
+
+        f_use = tk.BooleanVar(value=params.get("use_fldigi", True))
+        tk.Checkbutton(mt63_f, text="FLDIGI-Sendepfad aktiv", variable=f_use).pack(pady=5)
+        self.temp_entries["MT63"]["use_fldigi"] = f_use
+
+        fldigi_modem = ttk.Entry(mt63_f)
+        fldigi_modem.insert(0, str(params.get("fldigi_modem", "MT63-1KS")))
+        tk.Label(mt63_f, text="FLDIGI-Modem:").pack(pady=2)
+        fldigi_modem.pack(pady=2)
+        self.temp_entries["MT63"]["fldigi_modem"] = fldigi_modem
 
         tk.Label(mt63_f, text="BANDWIDTH:").pack()
         bw_cb = ttk.Combobox(mt63_f, values=["500Hz", "1k", "2k"])
@@ -3006,6 +3117,16 @@ class NoFuSTX:
                 ss.set(params.get("soundcard", "System"))
                 ss.pack()
                 self.temp_entries[mode]["soundcard"] = ss
+
+                f_use = tk.BooleanVar(value=params.get("use_fldigi", True))
+                tk.Checkbutton(f, text="FLDIGI-Sendepfad aktiv", variable=f_use).pack(pady=5)
+                self.temp_entries[mode]["use_fldigi"] = f_use
+
+                fldigi_modem = ttk.Entry(f)
+                fldigi_modem.insert(0, str(params.get("fldigi_modem", "SSB")))
+                tk.Label(f, text="FLDIGI-Modem:").pack(pady=2)
+                fldigi_modem.pack(pady=2)
+                self.temp_entries[mode]["fldigi_modem"] = fldigi_modem
             elif mode == "RTTY":
                 # Spezielle RTTY-Konfiguration inkl. Soundkarte
                 tk.Label(f, text="BPS:").pack()
@@ -3025,6 +3146,16 @@ class NoFuSTX:
                 rtty_sc.set(params.get("soundcard", "System"))
                 rtty_sc.pack(pady=2)
                 self.temp_entries[mode]["soundcard"] = rtty_sc
+
+                f_use = tk.BooleanVar(value=params.get("use_fldigi", True))
+                tk.Checkbutton(f, text="FLDIGI-Sendepfad aktiv", variable=f_use).pack(pady=5)
+                self.temp_entries[mode]["use_fldigi"] = f_use
+
+                fldigi_modem = ttk.Entry(f)
+                fldigi_modem.insert(0, str(params.get("fldigi_modem", "RTTY")))
+                tk.Label(f, text="FLDIGI-Modem:").pack(pady=2)
+                fldigi_modem.pack(pady=2)
+                self.temp_entries[mode]["fldigi_modem"] = fldigi_modem
             else:
                 for k, val in params.items():
                     if k == "active":
@@ -3068,7 +3199,12 @@ class NoFuSTX:
             "audio_rate_sdr": self.temp_entries["SDR"]["sdr_audio_rate"].get(),
             "audio_rate_aplay": self.temp_entries["SDR"]["audio_rate_aplay"].get(),
         }
-
+        # GUI übernehmen
+        self.config["GUI"] = {
+            "debug": self.temp_entries["GUI"]["debug"].get(),
+            "equip_check": self.temp_entries["GUI"]["equip_check"].get(),
+            "if_mesh_gps": self.temp_entries["GUI"]["if_mesh_gps"].get(),
+        }
         # Modi übernehmen
         for m, entries in self.temp_entries.items():
             if m in self.config["MODES"]:
@@ -3173,9 +3309,31 @@ class NoFuSTX:
             if mode not in ("AX25_PORTS", "APRS_IS", "LORA_MESH") and data.get("active"):
                 f = ttk.Frame(nb)
                 nb.add(f, text=mode)
-                t = tk.Text(f, bg="#001100", fg="#00FF00", font=("Courier", 11))
-                t.pack(expand=1, fill="both")
-                self.digi_terminals[mode] = t
+                
+                # Container für die beiden Bereiche (RX Text und Senden)
+                t_container = tk.Frame(f, bg="#001100")
+                t_container.pack(expand=1, fill="both")
+
+                # RX Bereich
+                t_recive = tk.LabelFrame(t_container, text=" Funkverkehr (RX Text) ", fg="#00FF00", bg="#001100")
+                t_recive.pack(expand=1, fill="both", padx=5, pady=2) # expand=1 und fill="both" für das Hauptfenster
+                
+                
+                # WICHTIG: Das Text-Widget muss in 't_recive' gepackt werden, nicht in 't_container'!
+                t = tk.Text(t_recive, bg="#001100", fg="#00FF00", font=("Courier", 11), borderwidth=0)
+                t.pack(expand=1, fill="both", padx=5, pady=5)
+
+                # TX Bereich
+                t_send = tk.LabelFrame(t_container, text=" Senden (TX Text) ", fg="#00FF00", bg="#001100")
+                t_send.pack(fill="x", padx=5, pady=2) # Hier KEIN expand=1, damit das Eingabefeld schmal bleibt
+
+                # WICHTIG: Das Entry-Widget muss in 't_send' gepackt werden!
+                t_send_entry = tk.Entry(t_send, bg="#001100", fg="#00FF00", font=("Courier", 11), borderwidth=0)
+                t_send_entry.pack(fill="x", padx=5, pady=5)
+                t_send_entry.bind("<Return>", self.on_digimode_send_enter)
+                t_send_entry._digimode_mode = mode
+
+                self.digi_terminals[mode] = {"receive": t, "sender": t_send_entry}
 
     # ---------- LOG ----------
     def get_utc_now(self):
@@ -3214,13 +3372,13 @@ class NoFuSTX:
         return counter
 
     def compose_iaru_text(self, header_lines, prio, body):
-        text_trenner = "# Meldungstext #\n"
+        text_trenner = "\n\n#NOFUSTX#Meldungstext#\n\n\n"
         return (
             text_trenner
-            + "- IARU-Meldung -\n"
+            + "-IARU-Meldung-\n"
             + "\n".join(header_lines)
             + f"\nWICHTIGKEIT: {prio}\n\n{body}\n"
-            + f"\n--- Ende der Meldung ---\n"
+            + f"\n---Ende der Meldung---\n\n"
         )
 
     def sanitize_filename_part(self, part):
@@ -3271,13 +3429,13 @@ class NoFuSTX:
         body_lines = []
 
         for line in lines:
-            if line.startswith("# Meldungstext #"):
+            if line.startswith("#NOFUSTX#Meldungstext#"):
                 in_body = True
                 continue
             if in_body:
                 body_lines.append(line)
                 continue
-            if line.startswith("- IARU-Meldung -"):
+            if line.startswith("-IARU-Meldung-"):
                 continue
             if ":" in line:
                 key, val = line.split(":", 1)
@@ -3383,7 +3541,7 @@ class NoFuSTX:
         return full_text, file_path
 
     def log_iaru_msg(self):
-        header_keys = ["Nummer", "Quelle / Station", "Wort-Zähler", "Herkunft", "Zeit (UTC)", "Datum"]
+        header_keys = ["Nummer", "Quelle / Station", "Wort-Zaehler", "Herkunft", "Zeit (UTC)", "Datum"]
         header_lines = []
         for key in header_keys:
             val = self.msg_fields.get(key)
@@ -3404,7 +3562,7 @@ class NoFuSTX:
     # --- Meldung senden (in Terminal und/oder nur Loggen) ---
     def send_iaru_msg(self):
         # IARU-Meldung als Text zusammensetzen
-        header_keys = ["Nummer", "Quelle / Station", "Wort-Zähler", "Herkunft", "Zeit (UTC)", "Datum"]
+        header_keys = ["Nummer", "Quelle / Station", "Wort-Zaehler", "Herkunft", "Zeit (UTC)", "Datum"]
         header_lines = []
         for key in header_keys:
             val = self.msg_fields.get(key)
@@ -3422,12 +3580,25 @@ class NoFuSTX:
         if mode == "LORA_MESH" and self.mesh_connected:
             self.iaru_mesh_send_msg(full_text)
         if mode and mode != "Nur Log" and mode != "LORA_MESH":
+            self.transmit_digimode_text(mode, full_text)
             term = getattr(self, "digi_terminals", {}).get(mode)
-            if term:
-                term.insert("end", "\n- IARU-Meldung -\n")
+            if isinstance(term, dict):
+                monitor = term.get("monitor")
+                receive = term.get("receive")
+                target = monitor if monitor is not None else receive
+                if target is not None:
+                    target.insert("end", f"\n[{self.utc_time_str()}] TX via {mode}\n")
+                    target.insert("end", full_text + "\n")
+                    target.see("end")
+                else:
+                    messagebox.showwarning(
+                        "Digimode",
+                        f"Kein Terminal für Modus '{mode}' gefunden.\nDie Meldung wird nur geloggt.",
+                    )
+            elif term:
+                term.insert("end", "\n-IARU-Meldung-\n")
                 term.insert("end", full_text + "\n")
                 term.see("end")
-                
             else:
                 messagebox.showwarning(
                     "Digimode",
@@ -3493,15 +3664,19 @@ class NoFuSTX:
             # Versuche die USB/Seriell-Verbindung aufzubauen
             dev = self.config.get("MODES", {}).get("LORA_MESH", "").get("ConnectionMode", "")
             print(f"[Mesh] Gerätepfad {dev}")
-            self.interface = meshtastic.serial_interface.SerialInterface(devPath=dev)
+            if meshtastic_serial_interface is None:
+                raise ImportError("Meshtastic-Serial-Interface nicht verfügbar")
+            self.interface = meshtastic_serial_interface.SerialInterface(devPath=dev)
 
-            d = self.interface.getMyNodeInfo()
+            mesh_iface = cast(Any, self.interface)
+            d = mesh_iface.getMyNodeInfo()
             # Wenn erfolgreich: Flags setzen und Funktionen anstoßen
             self.mesh_connected = True
             print(f"[Mesh] ✅ Gerät erfolgreich initialisiert.")
             
             # Deine Start-Kette für den Mesh-Betrieb
-            pub.subscribe(self.on_receive, "meshtastic.receive")
+            if pub is not None:
+                pub.subscribe(self.on_receive, "meshtastic.receive")
             self.meshtastic_test()
             self.start_monitor_thread()            
         except Exception as e:
@@ -3521,6 +3696,63 @@ class NoFuSTX:
                 )
                 self.digi_terminals["LORA_MESH"]["monitor"].see("end")
 
+    def _start_fldigi_client(self):
+        """Initialisiert FLDIGI/pyfldigi bei Bedarf und liefert einen Client zurück."""
+        if pyfldigi is None:
+            return None
+        try:
+            if self.fldigi_client is None:
+                if self.fldigi_app is None:
+                    try:
+                        self.fldigi_app = pyfldigi.ApplicationMonitor()
+                        self.fldigi_app.start()
+                    except Exception:
+                        self.fldigi_app = None
+                self.fldigi_client = pyfldigi.Client()
+            return self.fldigi_client
+        except Exception as exc:
+            print(f"[FLDIGI] Initialisierung fehlgeschlagen: {exc}")
+            return None
+
+    def transmit_digimode_text(self, mode, text):
+        """Sendet IARU-Text über FLDIGI, sofern im Modus aktiviert."""
+        if not text:
+            return False
+
+        mode = (mode or "").strip().upper()
+        params = self.config.get("MODES", {}).get(mode, {})
+        if not params.get("use_fldigi", True):
+            return False
+
+        client = self._start_fldigi_client()
+        if client is None:
+            self.log_list.insert(0, f"[{self.utc_iso_timestamp()}] {mode}: FLDIGI nicht verfügbar, TX nur protokolliert.")
+            return False
+
+        try:
+            modem_name = params.get("fldigi_modem") or {
+                "RTTY": "RTTY",
+                "MT63": "MT63-1KS",
+                "FAX": "WEFAX576",
+                "SSTV": "SSB",
+                "JS8CALL": "BPSK31",
+                "VARA": "SSB",
+                "WINLINK": "PSK500",
+            }.get(mode, mode)
+            if hasattr(client, "modem") and hasattr(client.modem, "name"):
+                try:
+                    client.modem.name = modem_name
+                except Exception:
+                    pass
+            if hasattr(client, "main") and hasattr(client.main, "send"):
+                client.main.send(text, block=False)
+                self.log_list.insert(0, f"[{self.utc_iso_timestamp()}] {mode}: TX an FLDIGI gesendet.")
+                return True
+        except Exception as exc:
+            print(f"[DIGI] {mode} TX fehlgeschlagen: {exc}")
+
+        return False
+
     def insert_with_limit(self, widget, text_to_insert, max_lines=100):
         """Fügt Text ein und wirft oben Zeilen raus, wenn es zu voll wird."""
         # 1. Text ganz normal unten rein und scrollen
@@ -3538,7 +3770,8 @@ class NoFuSTX:
     def meshtastic_test(self):
         try:
             
-            data = self.interface.getMyNodeInfo()
+            mesh_iface = cast(Any, self.interface)
+            data = mesh_iface.getMyNodeInfo()
 
             # Daten sicher extrahieren
             # .get() verhindert Abstürze, falls ein Feld (wie position) fehlt
@@ -3575,7 +3808,8 @@ class NoFuSTX:
     def mesh_my_heard(self):
         try:
             # Das Dictionary mit allen bekannten Teilnehmern
-            nodes = self.interface.nodes
+            mesh_iface = cast(Any, self.interface)
+            nodes = getattr(mesh_iface, "nodes", None) or {}
             self.digi_terminals["LORA_MESH"]["node_list"].delete(0, "end")
             self.digi_terminals["LORA_MESH"]["node_list"].insert("end", f"Name                 | ID           | Letzter Kontakt(UTC) | SNR")
 
@@ -3602,13 +3836,6 @@ class NoFuSTX:
         except Exception as e:
             print(f"Fehler: {e}")
         
-    def start_monitor_thread(self):
-        # Der Thread nutzt self.interface zum ZUHÖREN
-        #t = threading.Thread(target=self.receive_loop, daemon=True)
-        #t.start()
-        pass
-        
-
     # 1. Eine normale Funktion in deiner Klasse
     def on_receive(self, packet, interface):
         # print(f"Paket empfangen:\n {packet} \n################\n")
@@ -3618,8 +3845,10 @@ class NoFuSTX:
         sender_name = "Unbekannt"
         
         # Wir schauen in der Node-DB nach, ob wir diese ID kennen
-        if self.interface.nodes and sender_id in self.interface.nodes:
-            node_info = self.interface.nodes[sender_id]
+        mesh_iface = cast(Any, self.interface)
+        nodes = getattr(mesh_iface, "nodes", None) or {}
+        if nodes and sender_id in nodes:
+            node_info = nodes[sender_id]
             user_info = node_info.get('user', {})
             # Versuche den LongName zu bekommen, sonst ShortName, sonst bleibt es die ID
             sender_name = user_info.get('longName', user_info.get('shortName', sender_id))
@@ -3675,11 +3904,12 @@ class NoFuSTX:
             tele = decoded.get('telemetry', {})
 
     def receive_loop(self):
-        if not self.interface or not hasattr(self.interface, "stream_packets"):
+        mesh_iface = cast(Any, self.interface)
+        if not mesh_iface or not hasattr(mesh_iface, "stream_packets"):
             return
 
         try:
-            for packet in self.interface.stream_packets():
+            for packet in mesh_iface.stream_packets():
                 self.on_receive(packet, self.interface)
         except Exception as e:
             print(f"[Mesh] Fehler im Empfangs-Loop: {e}")
@@ -3692,6 +3922,26 @@ class NoFuSTX:
             return
         t = threading.Thread(target=self.receive_loop, daemon=True)
         t.start()
+
+    def on_digimode_send_enter(self, event):
+        """Sendet Text direkt aus einem Digimode-Entry-Feld."""
+        widget = event.widget
+        mode = getattr(widget, "_digimode_mode", None) or ""
+        msg_text = widget.get().strip()
+
+        if not mode or not msg_text:
+            return
+
+        if not self.transmit_digimode_text(mode, msg_text):
+            self.log_list.insert(0, f"[{self.utc_iso_timestamp()}] {mode}: TX nicht gesendet (kein FLDIGI/Client verfügbar).")
+
+        term = self.digi_terminals.get(mode)
+        if isinstance(term, dict):
+            receive = term.get("receive")
+            if receive is not None:
+                receive.insert("end", f"[{self.utc_time_str()}] TX via {mode}:\n{msg_text}\n")
+                receive.see("end")
+        widget.delete(0, "end")
 
     def on_mesh_send_enter(self, event):
         """Wird aufgerufen, wenn im Entry-Feld ENTER gedrückt wird."""
@@ -3706,7 +3956,8 @@ class NoFuSTX:
         if msg_text:
             try:
                 # Text per Meshtastic senden
-                self.interface.sendText(msg_text)
+                mesh_iface = cast(Any, self.interface)
+                mesh_iface.sendText(msg_text)
                 
                 # Lokale Chat-Anzeige befüllen
                 self.digi_terminals["LORA_MESH"]["receive"].insert(
@@ -3739,9 +3990,7 @@ class NoFuSTX:
             return
         
         try:
-            import time
-            from pubsub import pub
-            
+                        
             # 1. Text bereinigen (Damit Zeilenumbrüche die Chunks nicht verfälschen)
             clean_msg = msg.replace("\n", " ").replace("Ä", "Ae").replace("Ö", "Oe").replace("Ü", "Ue")
             clean_msg = clean_msg.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
@@ -3765,7 +4014,8 @@ class NoFuSTX:
                     self.mesh_ready_for_next = True
 
             # Temporär auf das Routing-Signal von Meshtastic lauschen
-            pub.subscribe(on_ack_received, "meshtastic.receive.routing")
+            if pub is not None:
+                pub.subscribe(on_ack_received, "meshtastic.receive.routing")
 
             for index, chunk in enumerate(chunks):
                 formatted_chunk = chunk
@@ -3778,7 +4028,8 @@ class NoFuSTX:
                 print(f"[Mesh] Übergebe Teil {index+1}/{total_chunks} an T-Beam...")
                 
                 # Nachricht absenden
-                self.interface.sendText(formatted_chunk)
+                mesh_iface = cast(Any, self.interface)
+                mesh_iface.sendText(formatted_chunk)
                 
                 # Lokale GUI-Einträge befüllen
                 self.digi_terminals["LORA_MESH"]["monitor"].insert(
@@ -3812,7 +4063,8 @@ class NoFuSTX:
                         time.sleep(0.5)
 
             # Nach der Schleife den temporären Listener wieder sauber abmelden
-            pub.unsubscribe(on_ack_received, "meshtastic.receive.routing")
+            if pub is not None:
+                pub.unsubscribe(on_ack_received, "meshtastic.receive.routing")
             print("[Mesh] IARU-Meldung vollständig verarbeitet.")
             
         except Exception as e:
@@ -3821,7 +4073,282 @@ class NoFuSTX:
                 "end", f"[{self.utc_time_str()}] ❌ Sende-Fehler: {e}\n"
             )
             self.digi_terminals["LORA_MESH"]["monitor"].see("end")
+    def check_equip(self):
+        equip_check_quest = messagebox.askyesno(
+            title = "Ablageplatz und Equipment",
+            message="Soll die Checkliste angezeigt werden?\nSie können Diese dann abarbeiten"
+        )
+        if equip_check_quest:
+            try:
+                self.help_notebook.select(self.sub_tab_check)
+                self.tabs.select(self.tab_help_main)
+            except Exception as e:
+                messagebox.showinfo("Hilfe", "Der Hilfebereich ist derzeit nicht verfügbar.")
+        else:
+            pass
+    
+    def mesh_gps_pos(self):
+        """
+        Aktualisiert beim Programmstart einmalig die HOME-Position aus Mesh-GPS,
+        sofern die Konfiguration das erlaubt und ein gültiger GPS-Stand verfügbar ist.
+        """
+        if not self.config.get("GUI", {}).get("if_mesh_gps", True):
+            return
 
+        if getattr(self, "mesh_home_auto_updated", False):
+            return
+
+        try:
+            if not self.mesh_connected or not self.interface:
+                return
+
+            mesh_iface = cast(Any, self.interface)
+            data = mesh_iface.getMyNodeInfo()
+            pos = data.get("position", {}) if isinstance(data, dict) else {}
+            lat_raw = pos.get("latitude")
+            lon_raw = pos.get("longitude")
+
+            if lat_raw is None or lon_raw is None:
+                return
+
+            # Meshtastic liefert Positionswerte oft in 10^7-Format.
+            lat = float(lat_raw) / 1e7 if abs(float(lat_raw)) > 180 else float(lat_raw)
+            lon = float(lon_raw) / 1e7 if abs(float(lon_raw)) > 180 else float(lon_raw)
+
+            if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+                return
+
+            self.mesh_home_auto_updated = True
+            self.set_home_position_from_click((lat, lon))
+
+            if hasattr(self, "log_list"):
+                try:
+                    self.log_list.insert(0, f"[{self.utc_iso_timestamp()}] Mesh-GPS Home-Update: {lat:.6f}, {lon:.6f}")
+                    self.write_session_log(f"[{self.utc_iso_timestamp()}] Mesh-GPS Home-Update: {lat:.6f}, {lon:.6f}")
+                except Exception:
+                    pass
+
+        except Exception:
+            self.mesh_home_auto_updated = True
+            return
+    
+    def simple_rx(self, event):
+        mode = self.rx_combo.get()
+        def is_fldigi_aktive(m):
+            cfg_raw = self.config.get("MODES", {}).get(m, {})
+            cfg = cfg_raw.get("use_fldigi", False)
+            return cfg
+        # Auswahl der RX Modi-Funktion
+        match mode:
+            case "MT63" if is_fldigi_aktive("MT63"):
+                print("[RX-Mode] MT63-Modus ausgewählt.")
+                self.start_fldigi_rx_loop()
+            case "RTTY" if is_fldigi_aktive("RTTY"):
+                print("[RX-Mode] RTTY-Modus ausgewählt.")
+                self.start_fldigi_rx_loop()
+            case "WINLINK" if is_fldigi_aktive("WINLINK"):
+                print("[RX-Mode] WINLINK-Modus ausgewählt.")
+                self.start_fldigi_rx_loop()
+            case "JS8CALL" if is_fldigi_aktive("JS8CALL"):
+                print("[RX-Mode] JS8CALL-Modus ausgewählt.")
+                self.start_fldigi_rx_loop()
+            case "VARA" if is_fldigi_aktive("VARA"):
+                print("[RX-Mode] VARA-Modus ausgewählt.")
+                self.start_fldigi_rx_loop()
+            case "FAX" if is_fldigi_aktive("FAX"):
+                print("[RX-Mode] FAX-Modus ausgewählt.")
+                self.start_fldigi_rx_loop()
+            case "Kein RX":
+                print("[RX-Mode] Kein RX-Modus ausgewählt.")
+                self.clear_vars_fldigi()
+            case _:
+                print("[RX-Mode] Kein RX-Modus. Wechsle zum Default")
+                messagebox.showwarning(
+                    "Modus nicht verfügbar", 
+                    f"Der Modus '{mode}' ist in der Konfiguration derzeit deaktiviert "
+                    "oder nutzt nicht die fldigi-Schnittstelle."
+                )
+                try:
+                    werte = self.rx_combo['values']
+                    if "Kein RX" in werte:
+                        self.rx_combo.current(werte.index("Kein RX"))
+                    else:
+                        self.rx_combo.set("Kein RX")
+                except Exception:
+                    self.rx_combo.set("")
+
+    def clear_vars_fldigi(self):
+        """Setzt alle Variablen zurück, die mit fldigi zu tun haben."""
+        # Polling-Timer abbrechen wenn aktiv
+        if self.fldigi_after_id is not None:
+            try:
+                self.root.after_cancel(self.fldigi_after_id)
+            except:
+                pass
+            self.fldigi_after_id = None
+        self.fldigi_polling_active = False
+
+    def start_fldigi_rx_loop(self):
+        """Startet die regelmäßige Abfrage von fldigi.
+        Wird einmalig am Ende von setup_ui() aufgerufen."""
+        if pyfldigi is None:  # Prüfen, ob die Library überhaupt geladen ist
+            return
+
+        # Guard: Wenn Polling bereits aktiv, nicht nochmal starten
+        if self.fldigi_polling_active:
+            print("[fldigi] Polling läuft bereits, kein neuer Start.")
+            return
+
+        # Markiere Polling als aktiv
+        self.fldigi_polling_active = True
+
+        try:
+            # Einmalig beim Start: ApplicationMonitor initialisieren (falls noch nicht geschehen)
+            # und den Client vorbereiten
+            client = self._start_fldigi_client()
+            if client is None:
+                self.fldigi_polling_active = False
+                print("[fldigi] Client-Initialisierung fehlgeschlagen.")
+                return
+            
+            # Alten Text-Müll bei fldigi löschen
+            client.text.get_rx_data()
+            print("[fldigi] RX-Abfrage-Loop gestartet...")
+        except Exception as e:
+            self.fldigi_polling_active = False
+            print(f"[fldigi] Start-Verbindungsfehler: {e}")
+            return
+
+        # Den ersten automatischen Durchlauf anstoßen
+        self.poll_fldigi_rx()
+
+    def poll_fldigi_rx(self):
+        """Prüft die fldigi-Schnittstelle und plant sich selbst nach 60 Sek. neu ein"""
+        mode = self.rx_combo.get()
+        
+        # Wenn zu "Kein RX" gewechselt wurde, Polling stoppen
+        if mode == "Kein RX" or not self.fldigi_polling_active:
+            self.fldigi_polling_active = False
+            self.fldigi_after_id = None
+            return
+        
+        # Hilfsprüfung: Mode muss fldigi aktivieren
+        mode_cfg = self.config.get("MODES", {}).get(mode, {})
+        if mode_cfg.get("use_fldigi", False):
+            try:
+                client = self._start_fldigi_client()
+                if client is not None:
+                    neue_daten = client.text.get_rx_data()
+
+                    if neue_daten:
+                        # Sicher decodieren
+                        text = neue_daten.decode('utf-8', errors='ignore') if isinstance(neue_daten, bytes) else str(neue_daten)
+                        
+                        if mode in self.digi_terminals and "receive" in self.digi_terminals[mode]:
+                            text_widget = self.digi_terminals[mode]["receive"]
+                            text_widget.insert("end", text)
+                            text_widget.see("end")
+                            
+                            # WICHTIG: Zuerst in den Buffer schreiben, DAMIT check_rx_iaru() es sehen kann!
+                            self.recive_buffer += text
+                            print(f"Inhalt des Buffers aktuell:\n{self.recive_buffer}")
+                            if "#NOFUSTX#Meldungstext#" in text :
+                                print(f"Startmaker gefunden\n")
+                            if "#NOFUSTX#Meldungstext#" in self.recive_buffer and "---Ende der Meldung---" in self.recive_buffer:
+                                print("[fldigi] Verdächtiger Textblock erkannt, prüfe auf IARU-Meldung...")
+                            # Jetzt erst prüfen
+                            self.check_rx_iaru(text)
+                            
+                            print(f"inhalt des Buffer:\n{self.recive_buffer}")
+                        
+
+            except Exception as e:
+                # Im Hintergrund unauffällig loggen, falls fldigi mal nicht läuft
+                print(f"[fldigi] Loop-Abfrage fehlgeschlagen (fldigi geschlossen?): {e}")
+
+        # In 60.000 Millisekunden (60 Sek.) diese Funktion wieder aufrufen
+        # Es gibt nur EINEN laufenden Timer, nicht mehrere
+        if not mode == "Kein RX" and self.fldigi_polling_active:
+            self.fldigi_after_id = self.root.after(60000, self.poll_fldigi_rx)
+    
+    def check_rx_iaru(self, rx_text):
+        """Sammelt empfangene FLDIGI-Textblöcke und verarbeitet vollständige IARU-Meldungen."""
+        start_marker = "#NOFUSTX#Meldungstext#"
+        end_marker = "---Ende der Meldung---"
+        
+        # Debug-Meldungen krisensicher im echten Buffer prüfen
+        if start_marker in self.recive_buffer:
+            print("[IARU-Scanner] Start-Marker im Buffer erkannt!")
+        if end_marker in self.recive_buffer:
+            print("[IARU-Scanner] End-Marker im Buffer erkannt! Verarbeite Block...")
+
+        # Endlosschleife, falls mehrere komplette Meldungen im Buffer stecken
+        while True:
+            start = self.recive_buffer.find(start_marker)
+            if start == -1:
+                break # Kein Startmarker da? Abbrechen und auf mehr Text warten.
+                
+            end = self.recive_buffer.find(end_marker, start)
+            if end == -1:
+                break # Startmarker da, aber Endmarker fehlt noch? Abbrechen und auf Rest warten!
+            
+            # Wenn wir hier landen, haben wir einen VOLLSTÄNDIGEN Block!
+            end += len(end_marker)
+
+            # Block ausschneiden
+            block = self.recive_buffer[start:end]
+            
+            # WICHTIG: Nur den verarbeiteten Teil aus dem Buffer löschen, 
+            # falls danach schon die nächste Nachricht anfängt!
+            self.recive_buffer = self.recive_buffer[end:]
+
+            try:
+                self._process_rx_iaru_block(block)
+            except Exception as e:
+                print(f"[IARU] Fehler bei der Verarbeitung empfangener Meldung: {e}")
+
+    def _process_rx_iaru_block(self, block):
+        """Extrahiert Header und Text aus einem kompletten IARU-Block und protokolliert ihn."""
+        # Der Block beginnt mit dem Marker, kann aber auch noch zusätzliche Zeilen enthalten.
+        payload = block
+        if "-IARU-Meldung-" in payload:
+            payload = payload.split("-IARU-Meldung-", 1)[1]
+
+        lines = [line.rstrip() for line in payload.splitlines()]
+        header_lines = []
+        body_lines = []
+        end_marker = "---Ende der Meldung---"
+        seen_body = False
+
+        for line in lines:
+            if not seen_body:
+                if not line.strip() and header_lines:
+                    seen_body = True
+                    continue
+                if not line.strip():
+                    continue
+                if ":" in line:
+                    header_lines.append(line.strip())
+                    continue
+                seen_body = True
+            if seen_body:
+                if line.strip() == end_marker:
+                    break
+                body_lines.append(line)
+
+        body_text = "\n".join(body_lines).strip()
+        prio = ""
+        for header in header_lines:
+            if header.upper().startswith("WICHTIGKEIT:"):
+                prio = header.split(":", 1)[1].strip()
+                break
+
+        if not body_text:
+            print("[IARU] Keine Nutzdaten im empfangenen IARU-Block gefunden.")
+            return
+
+        source = "FLDIGI"
+        self.receive_iaru_msg(source, header_lines, prio, body_text)
 # ---------- MAIN ----------
 # Startet die Anwendung, indem die Hauptklasse instanziiert und die Tkinter-Hauptschleife gestartet wird.
 if __name__ == "__main__":
