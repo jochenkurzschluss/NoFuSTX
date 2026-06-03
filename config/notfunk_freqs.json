@@ -1,0 +1,69 @@
+{
+    "FREQUENCIES": [
+        [
+            "FM",
+            "145.500 MHz",
+            "in Fonie zur Kommunikation der Einheiten untereinander"
+        ],
+        [
+            "AM",
+            "136.576 MHz",
+            "AIR Wetter Information"
+        ],
+        [
+            "FM",
+            "144.800 MHz",
+            "APRS zur Positionsermittlung"
+        ],
+        [
+            "FM",
+            "149.050 MHz",
+            "Freenet in Fonie zur Kommunikation der Einheiten untereinander"
+        ],
+        [
+            "FM",
+            "446.03125 MHz",
+            "PMR in Fonie zur Kommunikation der Einheiten untereinander"
+        ],
+        [
+            "FM",
+            "430.500 MHz",
+            "in Fonie zur Kommunikation der Einheiten untereinander"
+        ],
+        [
+            "FM",
+            "433.500 MHz",
+            "in Fonie zur Kommunikation der Einheiten untereinander"
+        ],
+        [
+            "FM",
+            "28.325 MHz",
+            "in Fonie zur Kommunikation der Einheiten untereinander"
+        ],
+        [
+            "FM",
+            "27.065 MHz",
+            "CB in Fonie zur Kommunikation der Einheiten untereinander"
+        ],
+        [
+            "FM",
+            "27.235 MHz",
+            "CB AFSK/APRS zur Positionsermittlung und Daten\u00fcbertragung"
+        ],
+        [
+            "USB",
+            "14.300 MHz",
+            "in Fonie zur Kommunikation \u00fcber sehr gro\u00dfe Entfernungen (Grenz\u00fcbergreifend)"
+        ],
+        [
+            "LSB",
+            "7.110 kHz",
+            "LSB in Fonie zur Kommunikation \u00fcber sehr gro\u00dfe Entfernungen (Deutschland weit)"
+        ],
+        [
+            "LSB",
+            "3.760 kHz",
+            "LSB in Fonie zur Kommunikation \u00fcber sehr gro\u00dfe Entfernungen (Deutschland weit)"
+        ]
+    ]
+}
