@@ -501,32 +501,50 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 ---
 
-##Versions-Historie
-###v1.9.16c (04.06.2026) – Aktueller Release-Status 
+## Versions-Historie
+
+### v1.9.16c (04.06.2026) – Aktueller Release-Status 
+
 - IARU-Meldungsworkflow: Vollautomatische Formular-Rücksetzung nach dem Absenden/Löschen inklusive automatischem Hochzählen des Mitteilungszählers.
 - Live-Einsatz-Log: Direkte 1:1-Visualisierung und Synchronisation der GUI-Protokollierung mit den Textdateien im Ordner logs/.
 - Hardware- & Druckeranbindung: Integration der automatischen Druckfunktion (Auto-Print) für eingehende Mitteilungen und Vorbereitung des Thermo-Drucker-Dummys.
 - System-Diagnose: Integration des automatischen Equipment-Checks zur visuellen Überprüfung fehlender System-Bibliotheken direkt aus den Einstellungen.
 - APRS_IS Schutz-Modus: Umstellung auf reinen Empfangsbetrieb zur absoluten Bandbreitenschonung im Krisenfall.
-###v1.9.15b
+
+
+### v1.9.15b
+
 - Initiale Stabilitätsversion: Erste konsolidierte Version zur Absicherung der Kernprozesse vor dem Feature-Ausbau.
-###v1.9.16a (25.05.2026)
+
+
+### v1.9.16a (25.05.2026)
+
 - Meshtastic/LoRa-Mesh Unterstützung: Erste Implementierung der dezentralen Peer-to-Peer-Kommunikation.
 - Erweiterte Abhängigkeiten: Integration von matplotlib und customtkinter für eine modernere Benutzeroberfläche und Datenvisualisierung.
 - Wetter-Daten Integration: Einbindung von Wetterdaten-Parsing über das APRS-Modul.
 - P2P-Kartensync über LAN: Automatisierte Synchronisation von Kartendaten zwischen mehreren lokalen NoFuS-Einheiten im Feld-Netzwerk.
 - Verbessertes Session-Logging: Optimierung der fortlaufenden Sitzungsprotokollierung.
-###v1.9.12
+
+
+### v1.9.12
+
 - SDR-Schnittstellenauswahl: Integration der TCP-Fernsteuerung für externe Software (gqrx/SDR#) sowie direkter Hintergrund-Aufruf von rtl_fm.
 - Personalverwaltung: Erstes funktionales GUI-Modul zur autarken Verwaltung und Zuordnung von Einsatzkräften im Feld.
-###v1.8.0
+
+
+### v1.8.0
+
 - Offline-Karten-Caching: Vollständige Implementierung der lokalen Kartendatenbank im Verzeichnis /off_maps zur autarken Nutzung.
 - PDF-Bibliothek: Integration der lokalen Dokumenten-Assets (DARC-Bandpläne, Allgemeinzuteilungen für CB/PMR/Freenet) im Hilfebereich.
 - Hardware-Kopplung: Erste Einbindung der Arduino-Schnittstelle zur Messung und Anzeige des Koffer-Voltmeters.
-###v1.0.0 bis v1.7.0 (Die Core-Entwicklung)
+
+
+### v1.0.0 bis v1.7.0 (Die Core-Entwicklung)
+
 - IARU-Standard: Grundlegende Implementierung des IARU-Meldungsformulars im Code.
 - AX.25 Packet Radio: Anbindung und Ansprache von lokalen Linux-axports.
 - Monolithische Basis: Erstellung des funktionellen Kern-Skripts (Monofile) zur netzunabhängigen Krisenkommunikation.
+
 
 ---
 
