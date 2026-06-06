@@ -807,7 +807,12 @@ class NoFuSTX:
         logs_dir = os.path.join(base_dir, "logs")
         os.makedirs(logs_dir, exist_ok=True)
 
-        self.session_log_start_utc = datetime.datetime.utcnow()
+        #self.session_log_start_utc = datetime.datetime.utcnow()
+        try:
+            self.session_log_start_utc = datetime.datetime.now(datetime.timezone.utc)
+        except AttributeError:
+            self.session_log_start_utc = datetime.datetime.utcnow()
+
         # start_str = self.session_log_start_utc.strftime("%Y-%m-%d_%H-%M-%S-UTC")
         start_str = self.session_log_start_utc.strftime("%d-%m-%Y_%H-%M-%S-UTC")
 
@@ -850,7 +855,8 @@ class NoFuSTX:
         if not self.session_log_path or not self.session_log_start_utc:
             return
 
-        stop_utc = datetime.datetime.utcnow()
+        #stop_utc = datetime.datetime.utcnow()
+        stop_utc = self.get_utc_now() 
         # stop_str = stop_utc.strftime("%Y-%m-%d_%H-%M-%S-UTC") # Änderung: Datum im Format DD-MM-YYYY
         stop_str = stop_utc.strftime("%d-%m-%Y_%H-%M-%S-UTC")
 
@@ -907,7 +913,7 @@ class NoFuSTX:
             try:
                 self.log_list.insert(
                     0,
-                    f"{datetime.datetime.utcnow().strftime('%H:%M:%S')} : APRS deaktiviert (aprslib nicht installiert).",
+                    f"{self.utc_time_str()} : APRS deaktiviert (aprslib nicht installiert).",
                 )
                 self.write_session_log(f"[{self.utc_iso_timestamp()}] APRS deaktiviert (aprslib nicht installiert).")
             except Exception:
@@ -1243,7 +1249,7 @@ class NoFuSTX:
                 self.update_weather_average()
 
             # 2. Eintrag in die Listbox auf der rechten Seite
-            timestamp = datetime.datetime.now().strftime("%H:%M")
+            timestamp = self.get_utc_now().strftime("%H:%M")
             entry_text = f"{timestamp} | {callsign} | {self.wx_vars['temp'].get()}"
             self.wx_listbox.insert(0, entry_text)
 
@@ -1316,7 +1322,7 @@ class NoFuSTX:
             self.aprs_update_queue.put(
                 {
                     "type": "log",
-                    "message": f"{datetime.datetime.utcnow().strftime('%H:%M:%S')} : APRS-IS nicht aktiv (Rufzeichen NOCALL).",
+                    "message": f"{self.get_utc_now().strftime('%H:%M:%S')} : APRS-IS nicht aktiv (Rufzeichen NOCALL).",
                 }
             )
             return
@@ -1362,7 +1368,7 @@ class NoFuSTX:
                 self.aprs_update_queue.put(
                     {
                         "type": "log",
-                        "message": f"{datetime.datetime.utcnow().strftime('%H:%M:%S')} : APRS-IS verbunden ({server}:{port}).",
+                        "message": f"{self.get_utc_now().strftime('%H:%M:%S')} : APRS-IS verbunden ({server}:{port}).",
                     }
                 )
                 # consumer() blockiert in dieser Thread-Funktion, liefert Pakete an _callback
@@ -1372,7 +1378,7 @@ class NoFuSTX:
                 self.aprs_update_queue.put(
                     {
                         "type": "log",
-                        "message": f"{datetime.datetime.utcnow().strftime('%H:%M:%S')} : APRS-IS Verbindung fehlgeschlagen – neuer Versuch in 30 s.",
+                        "message": f"{self.get_utc_now().strftime('%H:%M:%S')} : APRS-IS Verbindung fehlgeschlagen – neuer Versuch in 30 s.",
                     }
                 )
                 time.sleep(30)
@@ -1406,7 +1412,7 @@ class NoFuSTX:
             self.aprs_update_queue.put(
                 {
                     "type": "log",
-                    "message": f"{datetime.datetime.utcnow().strftime('%H:%M:%S')} : AX.25-Listener für {device} konnte nicht gestartet werden.",
+                    "message": f"{self.get_utc_now().strftime('%H:%M:%S')} : AX.25-Listener für {device} konnte nicht gestartet werden.",
                 }
             )
             return
@@ -1414,7 +1420,7 @@ class NoFuSTX:
         self.aprs_update_queue.put(
             {
                 "type": "log",
-                "message": f"{datetime.datetime.utcnow().strftime('%H:%M:%S')} : AX.25-Listener aktiv auf {device}.",
+                "message": f"{self.get_utc_now().strftime('%H:%M:%S')} : AX.25-Listener aktiv auf {device}.",
             }
         )
 
@@ -1530,7 +1536,7 @@ class NoFuSTX:
         # Kurzer Eintrag im Einsatz-Log
         if hasattr(self, "log_list"):
             log_text = (
-                f"{datetime.datetime.utcnow().strftime('%H:%M:%S')} : "
+                f"{self.get_utc_now().strftime('%H:%M:%S')} : "
                 f"APRS {src} ({source_type}) -> {symbol_table}{symbol_code} "
                 f"@ {lat:.5f},{lon:.5f}"
             )
@@ -1582,7 +1588,7 @@ class NoFuSTX:
         # Log-Eintrag
         if hasattr(self, "log_list"):
             msg = (
-                f"{datetime.datetime.utcnow().strftime('%H:%M:%S')} : "
+                f"{self.get_utc_now().strftime('%H:%M:%S')} : "
                 f"HOME-Position gesetzt @ {lat:.5f},{lon:.5f}"
             )
             try:
@@ -1883,7 +1889,7 @@ class NoFuSTX:
 
         for i, (txt, var) in enumerate(labels):
             tk.Label(self.wx_display_frame, text=txt, font=("Arial", 11, "bold")).grid(row=i, column=0, sticky="w", padx=10, pady=10)
-            tk.Label(self.wx_display_frame, textvariable=var, font=("Arial", 11), fg="white", bg="black").grid(row=i, column=1, sticky="w", padx=10, pady=10)
+            tk.Label(self.wx_display_frame, textvariable=var, font=("Arial", 11)).grid(row=i, column=1, sticky="w", padx=10, pady=10)
 
         self.wx_avg_vars = {
             "temp": tk.StringVar(value="-- °C"),
@@ -1903,14 +1909,15 @@ class NoFuSTX:
 
         for i, (txt, var) in enumerate(avg_labels):
             tk.Label(self.wx_avg_frame, text=txt, font=("Arial", 10, "bold")).grid(row=i, column=0, sticky="w", padx=10, pady=5)
-            tk.Label(self.wx_avg_frame, textvariable=var, font=("Arial", 10), fg="black", bg="white").grid(row=i, column=1, sticky="w", padx=10, pady=5)
+            tk.Label(self.wx_avg_frame, textvariable=var, font=("Arial", 10)).grid(row=i, column=1, sticky="w", padx=10, pady=5)
 
         # RECHTER BEREICH: Liste der WX-Stationen in der Nähe
         self.wx_list_frame = ttk.LabelFrame(self.wx_main_frame, text=" Empfangene Stationen ")
         self.wx_list_frame.pack(side=tk.RIGHT, fill="y", padx=5)
 
-        self.wx_listbox = tk.Listbox(self.wx_list_frame, width=30, font=("Courier", 10))
+        self.wx_listbox = tk.Listbox(self.wx_list_frame, width=30, font=("Courier", 10), bg="#F0F0F0", fg="#000000")
         self.wx_listbox.pack(expand=True, fill="both", padx=5, pady=5)
+        
 
 
     # --- SDR ---
@@ -2594,6 +2601,30 @@ class NoFuSTX:
         )
         # Positionierung: 10 Pixel vom rechten und unteren Rand entfernt
         self.btn_save_map.place(relx=1.0, rely=1.0, x=-10, y=-10, anchor="se")
+        self.btn_home_map = tk.Button(
+            self.map_widget, 
+            text="Karte Zentrieren", 
+            command=lambda: self.center_to_coordinates(
+                float(self.config.get("MAP", {}).get("home_lat", 51.9621)),
+                float(self.config.get("MAP", {}).get("home_lon", 9.6509)),
+                int(self.config.get("MAP", {}).get("zoom", 13))
+            ),
+            bg="#f0f0f0",
+            fg="black",
+            font=("Arial", 9, "bold"),
+            relief="raised"
+        )
+        # Positionierung: 10 Pixel vom rechten und oberen Rand entfernt
+        self.btn_home_map.place(relx=1.0, rely=0.0, x=-10, y=10, anchor="ne")
+
+    def center_to_coordinates(self, lat, lon, zoom):
+        """Hilfsfunktion zum Zentrieren der Karte auf bestimmte Koordinaten."""
+        try:
+            self.map_widget.set_position(lat, lon)
+            self.map_widget.set_zoom(zoom)
+            print(f"[Map] Karte auf Home zentriert: {lat}, {lon} (Zoom: {zoom})")
+        except Exception as e:
+            print(f"[Map] Fehler beim Zentrieren: {e}")
         
         
     def manual_tile_save(self):
@@ -2811,10 +2842,10 @@ class NoFuSTX:
 
         # Zeit & Datum vorbelegen (UTC)
         self.msg_fields["Zeit (UTC)"].insert(
-            0, datetime.datetime.utcnow().strftime("%H:%M:%S")
+            0, self.utc_time_str()
         )
         self.msg_fields["Datum"].insert(
-            0, datetime.datetime.utcnow().strftime("%d.%m.%Y")
+            0, self.utc_date_str()
         )
 
         self.msg_fields["Nummer"].insert(0, str(self.counter_number_msg))  # Standard-Nummer 1 für die erste Meldung
@@ -2836,7 +2867,7 @@ class NoFuSTX:
         body_f.rowconfigure(0, weight=1)
         body_f.columnconfigure(0, weight=1)
 
-        self.msg_text = tk.Text(body_f, font=("Courier", 12), wrap="word")
+        self.msg_text = tk.Text(body_f, font=("Arial", 12), wrap="word", bg="#FFFFFF", fg="#000000")
         self.msg_text.grid(row=0, column=0, sticky="nsew", padx=(5, 0), pady=5)
 
         text_scroll = ttk.Scrollbar(
@@ -2936,7 +2967,7 @@ class NoFuSTX:
         self.prio_var.set("Routine")
         
         # Datum und Zeit sofort wieder neu belegen
-        self.msg_fields["Datum"].insert(0, datetime.datetime.utcnow().strftime("%d.%m.%Y"))
+        self.msg_fields["Datum"].insert(0, self.utc_date_str())
         # Die Zeit wird durch update_iaru_time automatisch befüllt, wenn Auto aktiv ist
         
         # Wort-Zähler auf 0 setzen
@@ -2963,7 +2994,7 @@ class NoFuSTX:
         # Prüfen, ob das Tab/Feld überhaupt noch existiert (vermeidet Fehler beim Schließen)
         if "Zeit (UTC)" in self.msg_fields and self.msg_fields["Zeit (UTC)"].winfo_exists():
             if self.auto_time_var.get():
-                now = datetime.datetime.utcnow().strftime("%H:%M:%S")
+                now = self.utc_time_str()
                 # Feld leeren und neue Zeit rein
                 self.msg_fields["Zeit (UTC)"].delete(0, tk.END)
                 self.msg_fields["Zeit (UTC)"].insert(0, now)
@@ -3352,10 +3383,14 @@ class NoFuSTX:
             if port.get("active"):
                 f = ttk.Frame(nb)
                 nb.add(f, text=f"AX: {port.get('nickname', '')}")
-                t = tk.Text(
-                    f, bg="#001100", fg="#00FF00", font=("Courier", 11)
-                )
+                t_rx = tk.LabelFrame(f, text=" Funkverkehr (RX Text) ", fg="#00FF00", bg="#001100")
+                t_rx.pack(expand=1, fill="both", padx=5, pady=2)
+                t = tk.Text(t_rx, bg="#001100", fg="#00FF00", font=("Arial", 11))
                 t.pack(expand=1, fill="both")
+                t_tx = tk.LabelFrame(f, text=" Funkverkehr (TX Text) ", fg="#00FF00", bg="#001100")
+                t_tx.pack(expand=1, fill="both", padx=5, pady=2)
+                t_tx = tk.Entry(t_tx, bg="#001100", fg="#00FF00", font=("Arial", 11), borderwidth=0)
+                t_tx.pack(expand=1, fill="both")
                 key = f"AX:{port.get('nickname', '')}"
                 self.digi_terminals[key] = t
         for mode, data in self.config["MODES"].items():
@@ -3376,7 +3411,7 @@ class NoFuSTX:
                     lf_list, 
                     bg="#001100", 
                     fg="#00FF00", 
-                    font=("Courier", 10), 
+                    font=("Arial", 10), 
                     borderwidth=0, 
                     width=35,
                     yscrollcommand=scrollbar.set, # <--- Hier verknüpfen!
@@ -3394,19 +3429,19 @@ class NoFuSTX:
                 # MONITOR BEREICH
                 lf_mon = tk.LabelFrame(left_container, text=" System-Status / Monitor ", fg="#00FF00", bg="#001100")
                 lf_mon.pack(fill="x", padx=5, pady=2)
-                mon = tk.Text(lf_mon, height=8, bg="#001100", fg="#00FF00", font=("Courier", 10), borderwidth=0)
+                mon = tk.Text(lf_mon, height=8, bg="#001100", fg="#00FF00", font=("Arial", 10), borderwidth=0)
                 mon.pack(fill="x", padx=5, pady=5)
                 self.digi_terminals[mode]["monitor"] = mon
                 # RECEIVE BEREICH
                 lf_recv = tk.LabelFrame(left_container, text=" Funkverkehr (RX Text) ", fg="#00FF00", bg="#001100")
                 lf_recv.pack(expand=1, fill="both", padx=5, pady=2)
-                recv = tk.Text(lf_recv, height=10, bg="#001100", fg="#00FF00", font=("Courier", 11), borderwidth=0)
+                recv = tk.Text(lf_recv, height=10, bg="#001100", fg="#00FF00", font=("Arial", 11), borderwidth=0)
                 recv.pack(expand=1, fill="both", padx=5, pady=5)
                 self.digi_terminals[mode]["receive"] = recv
                 # SENDER BEREICH
                 lf_send = tk.LabelFrame(left_container, text=" Senden (TX Text) ", fg="#00FF00", bg="#001100")
                 lf_send.pack(fill="x", padx=5, pady=2)
-                send = tk.Entry(lf_send, bg="#001100", fg="#00FF00", font=("Courier", 11), borderwidth=0)
+                send = tk.Entry(lf_send, bg="#001100", fg="#00FF00", font=("Arial", 11), borderwidth=0)
                 send.pack(fill="x", padx=5, pady=5)
                 send.bind("<Return>", self.on_mesh_send_enter)
                 self.digi_terminals[mode]["sender"] = send
@@ -3422,13 +3457,13 @@ class NoFuSTX:
                 t_recive = tk.LabelFrame(t_container, text=" Funkverkehr (RX Text) ", fg="#00FF00", bg="#001100")
                 t_recive.pack(expand=1, fill="both", padx=5, pady=2) # expand=1 und fill="both" für das Hauptfenster
                 # WICHTIG: Das Text-Widget muss in 't_recive' gepackt werden, nicht in 't_container'!
-                t = tk.Text(t_recive, bg="#001100", fg="#00FF00", font=("Courier", 11), borderwidth=0)
+                t = tk.Text(t_recive, bg="#001100", fg="#00FF00", font=("Arial", 11), borderwidth=0)
                 t.pack(expand=1, fill="both", padx=5, pady=5)
                 # TX Bereich
                 t_send = tk.LabelFrame(t_container, text=" Senden (TX Text) ", fg="#00FF00", bg="#001100")
                 t_send.pack(fill="x", padx=5, pady=2) # Hier KEIN expand=1, damit das Eingabefeld schmal bleibt
                 # WICHTIG: Das Entry-Widget muss in 't_send' gepackt werden!
-                t_send_entry = tk.Entry(t_send, bg="#001100", fg="#00FF00", font=("Courier", 11), borderwidth=0)
+                t_send_entry = tk.Entry(t_send, bg="#001100", fg="#00FF00", font=("Arial", 11), borderwidth=0)
                 t_send_entry.pack(fill="x", padx=5, pady=5)
                 t_send_entry.bind("<Return>", self.on_digimode_send_enter)
                 t_send_entry._digimode_mode = mode # type: ignore - Speichere den Modus direkt im Widget für den Send-Handler
@@ -3446,6 +3481,17 @@ class NoFuSTX:
     def utc_time_str(self, dt=None):
         dt = dt or self.get_utc_now()
         return dt.strftime("%H:%M:%S")
+    def utc_date_str(self, dt=None):
+        dt = dt or self.get_utc_now()
+        return dt.strftime("%d.%m.%Y")
+    def formatted_utc_timestamp(self, timestamp=None):
+        try:
+            if timestamp is not None:
+                dt = datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc)
+            return dt.strftime("%H:%M:%S")
+        except Exception:
+            return None
+
     def ensure_msg_folder(self):
         os.makedirs(self.msg_folder, exist_ok=True)
     def load_message_counter(self):
@@ -3490,9 +3536,10 @@ class NoFuSTX:
         return summary[:120]
     def add_message_history_entry(self, direction, nr, prio, summary, file_path):
         try:
-            time_str = datetime.datetime.utcfromtimestamp(
-                os.path.getmtime(file_path)
-            ).strftime("%H:%M:%S")
+            #time_str = datetime.datetime.utcfromtimestamp(os.path.getmtime(file_path)).strftime("%H:%M:%S")
+            time_str = self.formatted_utc_timestamp(os.path.getmtime(file_path))
+            #print(f"[DEBUG] {os.path.getmtime(file_path)}")
+            #print(f"[DEBUG] Parsed time: {self.formatted_utc_timestamp(os.path.getmtime(file_path))}")
         except Exception:
             time_str = self.utc_time_str()
         if hasattr(self, "msg_history_tree"):
@@ -3694,7 +3741,7 @@ class NoFuSTX:
         messagebox.showinfo("NoFuS-TX", "Meldung gesendet und protokolliert.")
     # --- Log-Tab einrichten ---
     def setup_log_tab(self):
-        self.log_list = tk.Listbox(self.tab_log, font=("Courier", 10))
+        self.log_list = tk.Listbox(self.tab_log, font=("Courier", 10), bg="#FFFFFF", fg="#000000")
         self.log_list.pack(expand=1, fill="both", padx=10, pady=10)
     # ---------- UHR ----------
     def update_clock(self):
@@ -3831,15 +3878,15 @@ class NoFuSTX:
             lon = pos.get('longitude')
             high = pos.get('altitude')
             # print(f"lat: {lat}")
-            self.log_list.insert(0, f"[{self.utc_iso_timestamp()}]---Meshtastic--- Gerät gefunden")
-            self.write_session_log(f"[{self.utc_iso_timestamp()}] ---Meshtastic--- Gerät gefunden\nMesh Node: {long_name} | Hardware: {hw_model}")
-            self.log_list.insert(0, f"[{self.utc_iso_timestamp()}] Mesh Node: {long_name} | Hardware: {hw_model}")
+            self.log_list.insert(0, f"[{self.utc_time_str()}]---Meshtastic--- Gerät gefunden")
+            self.write_session_log(f"[{self.utc_time_str()}] ---Meshtastic--- Gerät gefunden\nMesh Node: {long_name} | Hardware: {hw_model}")
+            self.log_list.insert(0, f"{self.utc_time_str()} : Mesh {long_name} | Hardware: {hw_model}")
             self.digi_terminals["LORA_MESH"]["monitor"].insert("end", f"Mesh Node: {long_name} | Hardware: {hw_model}\n")
             if lat and lon:
                 # Meshtastic nutzt 10^7 Format (7 Nachkommastellen)
-                self.log_list.insert(0, f"[{self.utc_iso_timestamp()}] Position: LAT {lat}, LON {lon}, Höhe: {high}m")
+                self.log_list.insert(0, f"[{self.utc_time_str()}] Position: LAT {lat}, LON {lon}, Höhe: {high}m")
             else:
-                self.log_list.insert(0, f"[{self.utc_iso_timestamp()}] Position: Keine GPS-Daten verfügbar.")
+                self.log_list.insert(0, f"[{self.utc_time_str()}] Position: Keine GPS-Daten verfügbar.")
             self.mesh_my_heard()
             return data
         except Exception as e:
@@ -3860,12 +3907,13 @@ class NoFuSTX:
                     # Zeitstempel des letzten Kontakts (Last Heard)
                     last_heard_raw = node_data.get('lastHeard')
                     if last_heard_raw:
-                        last_heard = datetime.datetime.utcfromtimestamp(last_heard_raw).strftime('%d.%m %H:%M')
+                        #last_heard = datetime.datetime.utcfromtimestamp(last_heard_raw).strftime('%d.%m %H:%M')
+                        last_heard = self.formatted_utc_timestamp(timestamp=last_heard_raw)
                     else:
                         last_heard = "Nie"
                     # Signalqualität (SNR) - wie gut hörst du den anderen?
                     snr = node_data.get('snr', 'N/A')
-                    self.log_list.insert(0, f"[{self.utc_iso_timestamp()}] Mesh Node: {long_name} (ID: {hex_id}), Last Heard: {last_heard}, SNR: {snr}")
+                    self.log_list.insert(0, f"{self.utc_time_str()} : Mesh {long_name} (ID: {hex_id}), Last Heard: {last_heard}, SNR: {snr}")
                     self.digi_terminals["LORA_MESH"]["node_list"].insert("end", f"{long_name:<20} | {hex_id:<12} | {last_heard:<20} | {snr}")
             self.root.after(180000, self.mesh_my_heard) # Alle 3 Minuten aktualisieren
         except Exception as e:
