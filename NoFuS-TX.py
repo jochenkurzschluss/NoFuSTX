@@ -16,7 +16,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 # =============================================================================
 # =============================================================================
-# NoFuS-TX - IMPORT SEKTION (v1.9.16c)
+# NoFuS-TX - IMPORT SEKTION (v1.9.16d)
 # Unterstützt: APRS, JS8Call, VARA, Winlink, MT63, RTTY, SSTV, FAX, AX.25
 # Plattformen: Windows, Linux, macOS
 # =============================================================================
@@ -34,7 +34,7 @@ if os.path.exists(libs_path):
     sys.path.insert(0, libs_path)
     # Debug-Ausgabe in der Konsole
     INFOECHO = f"[Lib] NoFuS-TX Portable-Modus: Nutze lokale Libs aus {libs_path}"
-    
+
 # Jetzt können wir die Module importieren, die in libs liegen (z.B. pyjs8call, pyvara, etc.)
 import datetime
 import copy
@@ -81,6 +81,8 @@ from tkterminal import Terminal # type: ignore
 # Hinweis: Diese müssen über den check_dependencies() geprüft werden
 try:
     import aprslib      # APRS-Protokoll Dekodierung
+    import aprslib.parsing
+    import aprslib.exceptions
 except ImportError:
     aprslib = None
 try:
@@ -132,7 +134,7 @@ try:
 except ImportError:
      pymt63 = None
 '''
-try:
+try: # --- AX.25 Bibliotheken ---
     import ax25
     import ax25.netrom
     import ax25.ports
@@ -143,7 +145,7 @@ except ImportError:
     ax25 = None
     ax25old = None
 try:
-    import meshtastic
+    import meshtastic # --- Meshtastic für LoRa Mesh Netzwerke ---
     import meshtastic.serial_interface as meshtastic_serial_interface
     import meshtastic.mesh_interface as meshtastic_mesh_interface
     import pubsub
@@ -155,7 +157,7 @@ except ImportError:
     pubsub = None
     pub = None
 try:
-    import urllib.request
+    import urllib.request # --- Für den Download von Karten-Updates über LAN-Sync ---
     import shutil
 except ImportError:
     urllib = None
@@ -165,7 +167,7 @@ except ImportError:
 class NoFuSTX:
     def __init__(self, root):
         self.root = root
-        self.root.title("NoFuS-TX - Einsatzleitsoftware v1.9.16c")
+        self.root.title("NoFuS-TX - Einsatzleitsoftware v1.9.16d")
         try:
             # Wir laden das PNG als PhotoImage
             icon_img = tk.PhotoImage(file="icons/NoFuSTX.png")
@@ -173,6 +175,7 @@ class NoFuSTX:
         except Exception as e:
             print(f"Programm-Icon Fehler: {e}")
         self.root.geometry("1250x950")
+        # --- Datei- und Ordnerstruktur sicherstellen ---
         self.config_folder = os.path.join(base_path, "config")
         os.makedirs(self.config_folder, exist_ok=True)
         self.config_file = os.path.join(self.config_folder, "nofustx_config.json")
@@ -181,10 +184,10 @@ class NoFuSTX:
         self.msg_folder = os.path.join(base_path, "msg")
         os.makedirs(self.msg_folder, exist_ok=True)
         self.msg_history_entries = {}
-        self.counter_number_msg = 1
+        self.counter_number_msg = 1 # --- IARU Mitteilungszähler ---
 
-        # Voltmeter Device
-        self.BAUD_RATE = 9600
+        # Voltmeter-Gerät
+        self.BAUD_RATE = 9600  # Standard-Baudrate für die serielle Kommunikation mit dem Voltmeter (kann in der Konfiguration angepasst werden)
 
         # Einsatz-Session-Log (pro Programmstart eine Datei)
         self.session_log_file = None
@@ -194,12 +197,6 @@ class NoFuSTX:
         # APRS-Lage: Marker- und Update-Verwaltung
         self.aprs_update_queue = queue.Queue()
         self.aprs_markers = {}
-        self.fldigi_client = None
-        self.fldigi_app = None
-        self.fldigi_polling_active = False  # Flag gegen doppelte Polling-Timer
-        self.fldigi_after_id = None  # ID des laufenden after()-Timers
-        self.recive_buffer = ""
-        self.user_say_no = False  # Flag, um zu verhindern, dass der Nutzer mehrfach gefragt wird, wenn er einmal "Nein" gesagt hat
         self.aprs_icon_cache = {}
         self.home_marker = None
         self.wx_history = []
@@ -210,49 +207,108 @@ class NoFuSTX:
             "wind": [],
             "rain": []
         }
-
+        # fldigi-Variablen
+        self.fldigi_client = None
+        self.fldigi_app = None
+        self.fldigi_polling_active = False  # Flag gegen doppelte Polling-Timer
+        self.fldigi_after_id = None  # ID des laufenden after()-Timers
+        # Puffer zum Filtern des RX und zur Erkennung von IARU-Mitteilungen
+        self.recive_buffer = ""
+        
+        self.user_say_no = False  # Flag, um zu verhindern, dass der Nutzer mehrfach gefragt wird, wenn er einmal "Nein" gesagt hat - im LAN Sync
+        
+        
+        # --- Für Konfig und andere Standards
         self.options = {
-            "RTTY_BPS": ["45.45", "50", "75", "100", "200"],
-            "SSTV_MODES": ["Martin 1", "Martin 2", "Scottie 1", "Scottie 2", "Robot 36", "Robot 72"],
-            "AX25_DEVICES": ["ax0", "ax1", "ax2", "kiss0", "udp0"],
-            "LORA_MODEMS": ["LongFast", "LongSlow", "ShortFast"]
+            "RTTY_BPS": ["45.45", "50", "75", "100", "200"],  # <--- RTTY-Übertragungsraten in Baud (bps)
+            "SSTV_MODES": ["Martin 1", "Martin 2", "Scottie 1", "Scottie 2", "Robot 36", "Robot 72"],  # <--- Standard-SSTV-Modelle
+            "AX25_DEVICES": ["ax0", "ax1", "ax2", "kiss0", "udp0"],  # <--- Mögliche AX.25-Kernel-Devices oder KISS-Worker, je nachdem, was du nutzt.
+            "LORA_MODEMS": ["LongFast", "LongSlow", "ShortFast"],  # <-- Standard-LoRa-Modemprofile, können aber je nach Hardware variieren.
+            "BAUD_RATES": ["1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200"],  # <--- Gängige Baudraten
+            "HARDWARE": ["ax", "kiss", "ip", "soft"]  # <--- "ax" spricht Linux-AX.25 an, "kiss" den neuen KISS-Worker, "ip" für netzwerkgebundene Betriebsarten wie Hamnet und "soft" für Meshtastic und ähnliche Lösungen.
         }
 
         # Vollständige Default-Config inkl. neuer Felder für Modi oder Ergänungen
         self.default_config = {
             "MODES": {
                 "AX25_PORTS": [
-                    {"active": True, "device": "ax0", "nickname": "CB-APRS", "call": "NOCALL"},
-                    {"active": True, "device": "ax1", "nickname": "AFU-Packet", "call": "NOCALL"}
+                    {
+                    "active": False,
+                    "device": "/dev/ttyUSB0",  # <--- Ändert sich zu /dev/ttyUSB0-9 oder COM0-9; zuvor war es ax0
+                    "hardware": "ax",  # <--- Hier wird definiert, wie der AFSK/Packet-Port angesprochen wird
+                    "BAUD_RATE": 9600,  # <--- Übertragungsrate, wenn es ein TNC bzw. ein Gerät ist, das über /dev/ttyUSB oder COM1 angesprochen wird
+                    "aprs": False,  # <-- Kommen über dieses Gerät APRS-Frames?
+                    "nickname": "CB-APRS",  # <--- Kurzname, damit die einzelnen Geräte unterschieden werden
+                    "call": "NOCALL"  # <--- Das Rufzeichen, das genutzt wird (später sollte dies aus der globalen Konfiguration kommen)
+                    },
+                    {
+                    "active": False,
+                    "device": "/dev/ttyUSB0",  # <--- Ändert sich zu /dev/ttyUSB0-9 oder COM0-9; zuvor war es ax0
+                    "hardware": "kiss",  # <--- Hier wird definiert, wie der AFSK/Packet-Port angesprochen wird
+                    "BAUD_RATE": 9600,  # <--- Übertragungsrate, wenn es ein TNC bzw. ein Gerät ist, das über /dev/ttyUSB oder COM1 angesprochen wird
+                    "aprs": False,  # <-- Kommen über dieses Gerät APRS-Frames?
+                    "nickname": "CB-APRS",  # <--- Kurzname, damit die einzelnen Geräte unterschieden werden
+                    "call": "NOCALL"  # <--- Das Rufzeichen, das genutzt wird (später sollte dies aus der globalen Konfiguration kommen)
+                    },
+                    {
+                    "active": False,
+                    "device": "/dev/ttyUSB0",  # <--- Ändert sich zu /dev/ttyUSB0-9 oder COM0-9; zuvor war es ax0
+                    "hardware": "ip",  # <--- Hier wird definiert, wie der AFSK/Packet-Port angesprochen wird
+                    "BAUD_RATE": 9600,  # <--- Übertragungsrate, wenn es ein TNC bzw. ein Gerät ist, das über /dev/ttyUSB oder COM1 angesprochen wird
+                    "aprs": False,  # <-- Kommen über dieses Gerät APRS-Frames?
+                    "nickname": "CB-APRS",  # <--- Kurzname, damit die einzelnen Geräte unterschieden werden
+                    "call": "NOCALL"  # <--- Das Rufzeichen, das genutzt wird (später sollte dies aus der globalen Konfiguration kommen)
+                    },
+                    {
+                    "active": False,
+                    "device": "/dev/ttyUSB0",  # <--- Ändert sich zu /dev/ttyUSB0-9 oder COM0-9; zuvor war es ax0
+                    "hardware": "soft",  # <--- Hier wird definiert, wie der AFSK/Packet-Port angesprochen wird
+                    "BAUD_RATE": 9600,  # <--- Übertragungsrate, wenn es ein TNC bzw. ein Gerät ist, das über /dev/ttyUSB oder COM1 angesprochen wird
+                    "aprs": False,  # <-- Kommen über dieses Gerät APRS-Frames?
+                    "nickname": "CB-APRS",  # <--- Kurzname, damit die einzelnen Geräte unterschieden werden
+                    "call": "NOCALL"  # <--- Das Rufzeichen, das genutzt wird (später sollte dies aus der globalen Konfiguration kommen)
+                    }
                 ],
                 "APRS_IS": {
-                    "active": True,
-                    "server": "euro.aprs2.net",
-                    "port": "14580",
-                    "call": "NOCALL",
-                    "passcode": "00000",
-                    "range_km": "20",
-                    "view_range": "13",
+                    "active": False,
+                    "server": "euro.aprs2.net", # <--- APRS-IS Server kann auch ithnet.de oder CBaprs.de sein
+                    "port": "14580", # <--- Port zur kommunikation
+                    "call": "NOCALL", # <--- Rufzeichen kommt später auch aus der Config Usercall
+                    "passcode": "00000", # <--- Passcode zum rufzeichen, ist nötig um APRS-IS TX zu ermöglichen aber auch nützlich für RX
+                    "range_km": "20", # <--- Filter angabe 
+                    "view_range": "13", # <--- Anzeige Radius
                 },
+                "LORA_APRS": {
+                    "active": False,
+                    "port": "/dev/ttyUSB0", # <--- Port zur Kommunikation mit dem LoRa-Modem (kann je nach Hardware variieren, z.B. /dev/ttyUSB0-9 oder COM0-9)
+                    "baud": 115200 # <--- Baudrate für die serielle Kommunikation mit dem LoRa-Modem (muss mit der Einstellung im Modem übereinstimmen)
+                },
+                "LORA_MESH": {
+                    "active": False,
+                    "Device": "MeshID", # <--- Hier wird die Device-ID oder der Mesh-Name eingetragen, damit die App weiß, mit welchem Gerät sie kommunizieren soll. Je nach Hardware kann das z.B. "ttyUSB0" oder "COM3" sein, oder bei Netzwerkgebundenen Modems eine IP-Adresse oder ein eindeutiger Mesh-Name.
+                    "modem": "LongFast", # <--- Hier wird das Modemprofil eingetragen, z.B. "LongFast", "LongSlow" oder "ShortFast". Je nach Hardware und Anwendungsfall kann das variieren. Einfach mal in der Dokumentation des Modems schauen, welche Profile es unterstützt und die Liste hier anpassen!
+                    "ConnectionMode": "/dev/ttyACM0", # <--- Hier wird die Art der Verbindung zum Modem eingetragen. Das kann z.B. ein serieller Port wie "/dev/ttyACM0" oder "COM3" sein, oder bei Netzwerkgebundenen Modems eine IP-Adresse mit Port wie "192.168.1.100:8080"
+                    "ADMIN": "1234", # <--- AdminPasswort Neue sicherheitsregel bei Meshtastic
+                    },
                 "WINLINK": {
-                    "active": True,
+                    "active": False,
                     "rms_server": "cms.winlink.org",
                     "port": "8772",
                     "call": "NOCALL",
+                    "device": "/dev/ttyUSB0",
+                    "hardware": "TNC",
+                    "BAUD_RATE": 9600,
                     "use_fldigi": True,
                     "fldigi_modem": "PSK500",
                 },
-                "LORA_MESH": {
-                    "active": True,
-                    "Device": "MeshID",
-                    "modem": "LongFast",
-                    "ConnectionMode": "/dev/ttyACM0",
-                    },
                 "RTTY": {
                     "active": False,
                     "bps": "45.45",
                     "shift": "170",
                     "soundcard": "System",
+                    "device": "/dev/ttyUSB0",
+                    "hardware": "TNC",
+                    "BAUD_RATE": 9600,
                     "use_fldigi": True,
                     "fldigi_modem": "RTTY",
                 },
@@ -260,6 +316,9 @@ class NoFuSTX:
                     "active": False,
                     "mode": "Martin 1",
                     "soundcard": "System Standard",
+                    "device": "/dev/ttyUSB0",
+                    "hardware": "TNC",
+                    "BAUD_RATE": 9600,
                     "use_fldigi": True,
                     "fldigi_modem": "SSB",
                 },
@@ -267,6 +326,9 @@ class NoFuSTX:
                     "active": False,
                     "lpm": "120",
                     "ioc": "576",
+                    "device": "/dev/ttyUSB0",
+                    "hardware": "TNC",
+                    "BAUD_RATE": 9600,
                     "use_fldigi": True,
                     "fldigi_modem": "WEFAX576",
                 },
@@ -275,6 +337,9 @@ class NoFuSTX:
                     "frequency": "7.078 MHz",  # Typische JS8Call-Frequenz
                     "callsign": "NOCALL",
                     "soundcard": "System",
+                    "device": "/dev/ttyUSB0",
+                    "hardware": "TNC",
+                    "BAUD_RATE": 9600,
                     "use_fldigi": True,
                     "fldigi_modem": "BPSK31",
                 },
@@ -283,6 +348,9 @@ class NoFuSTX:
                     "frequency": "14.105 MHz",  # Typische VARA-Frequenz
                     "callsign": "NOCALL",
                     "soundcard": "System",
+                    "device": "/dev/ttyUSB0",
+                    "hardware": "TNC",
+                    "BAUD_RATE": 9600,
                     "use_fldigi": True,
                     "fldigi_modem": "SSB",
                 },
@@ -291,10 +359,14 @@ class NoFuSTX:
                     "frequency": "7.040 MHz",  # Typische MT63-Frequenz
                     "bandwidth": "1k",  # z. B. 500Hz, 1k, 2k
                     "soundcard": "System",
+                    "device": "/dev/ttyUSB0",
+                    "hardware": "TNC",
+                    "BAUD_RATE": 9600,
                     "use_fldigi": True,
                     "fldigi_modem": "MT63-1KS",
                 },
             },
+            # --- Drucker --- 
             "PRINTER": {"name": "Standard-Thermo", "auto_print": False},
             "UNITS": [
                 {"name": "Zentrale (NoFuS-E)", "type": "NoFuS-E", "status": True},
@@ -319,21 +391,24 @@ class NoFuSTX:
             "DEPENDENCIES": {
                 "is_read": 0,
             },
+            # --- IARU Mitteilungszähler ---
             "IARU": {
                 "next_message_number": 1
             },
+            # --- Rufzeichen z.B. DO2ITH ---
             "USERCALL": {
                 "CALLSINGEN": "NOCALL"
             },
+            # --- Software-Defined-Radio-Optionen
             "SDR":{
                 "active": False,
-                "sdr_mode": "none",  # z.B. "rtl_sdr", "gqrx", "sdrplay"
+                "sdr_mode": "none",  # z.B. "rtl_sdr", "gqrx", "sdrplay" wie wird SDR betrieben
                 "sdr_rate": "2400k",
                 "audio_rate_sdr": "48k",
                 "audio_rate_aplay": "48000"
             }
         }
-        # Vollständige Default-Frequenzen mit Beschreibungen in .jason für jede Guppe zu Ändern!
+        # Vollständige Standardfrequenzen mit Beschreibungen in JSON, die für jede Gruppe angepasst werden können!
         self.default_frequencies = {
             "FREQUENCIES": [
                 ["FM", "145.500 MHz", "in Fonie zur Kommunikation der Einheiten untereinander"],
@@ -350,7 +425,7 @@ class NoFuSTX:
                 ["LSB","3.760 kHz", "LSB in Fonie zur Kommunikation über sehr große Entfernungen (Deutschland weit)"],
                 ]
         }
-        
+        # Einstellungen und Frequenzen laden und dabei die Struktur reparieren, falls neue Felder oder Bereiche in der Standardkonfiguration hinzugekommen sind, damit die App nach Updates mit alten Konfigurationen weiterhin läuft, ohne wichtige Einstellungen zu verlieren.
         self.load_settings()
         self.load_frequencies()
         
@@ -363,31 +438,34 @@ class NoFuSTX:
             sys.stderr = open(os.devnull, 'w')
         print(INFOECHO)  # Diese Zeile wird nur angezeigt, wenn Debug in der Config aktiviert ist
         self.counter_number_msg = self.load_message_counter()
-        self.init_session_log()
-        if not self.config.get("DEPENDENCIES", {}).get("is_read", 0):
+        self.init_session_log() # <--- Starten des Einsatzlog
+        if not self.config.get("DEPENDENCIES", {}).get("is_read", 0): # <--- Ist es ein Erststart des Progrmms ?
             self.check_dependencies()
             self.config["DEPENDENCIES"]["is_read"] = 1
             self.set_USERCALL()
             self.show_config_window()
             self.save_settings()
-        self.setup_ui()
-        self.mesh_connected = False
-        self.interface: Any = None
-        self.mesh_home_auto_updated = False
+        
+        self.setup_ui()# <--- Grafikoberfläche Starten
+        self.mesh_connected = False # <--- Status, ob wir mit einem LoRa-Mesh verbunden sind
+        self.interface: Any = None # <--- Schnittstellen-Objekt für LoRa Mesh (z.B. SerialInterface oder NetworkInterface, je nach ConnectionMode)
+        self.mesh_kanal_name = None
+        self.mesh_channels_dict = {}
+        self.mesh_home_auto_updated = False # <--- Flag, um zu verhindern, dass die Home-Position mehrfach automatisch aktualisiert wird, wenn das GPS-Signal schwankt
 
         # Prüfen, ob LORA_MESH in deiner Config aktiv geschaltet ist
         if self.config["MODES"].get("LORA_MESH", {}).get("active"):
             print("[Mesh] Konfiguration aktiv. Starte Hardware-Suche...")
             self.init_meshtastic_hardware()
             self.mesh_gps_pos()
-        self.init_aprs_system()
-        if self.config.get("GUI", {}).get("equip_check", True):
+        self.init_aprs_system() # <--- APRS System starten (APRS-IS Verbindung, TNC-Listener, etc.)
+        if self.config.get("GUI", {}).get("equip_check", True): # <--- Wenn in der Config eingestellt ist, dass die Ausrüstungsprüfung aktiviert sein soll, dann starten wir sie direkt beim Programmstart
             self.check_equip()
-        if self.config.get("GUI", {}).get("voltmeter", True):
+        if self.config.get("GUI", {}).get("voltmeter", True): # <--- Wenn in der Config eingestellt ist, dass das Voltmeter aktiviert sein soll, dann starten wir es direkt beim Programmstart
             self.voltmeter_thread()
 
     # --------- KONFIGURATIONSLADUNG & -SPEICHERUNG ----------
-    def _repair_config_structure(self, config: Any, defaults: Any) -> bool:
+    def _repair_config_structure(self, config: Any, defaults: Any) -> bool: # <--- Funtion die eine Prüfung der Konfigiration durchführt und ggf. Reperiert!
         """
         Aktualisiert eine geladene Config dynamisch mit den aktuellen Default-Werten.
         Erhält bestehende Nutzerdaten, ergänzt aber fehlende oder kaputte Bereiche.
@@ -443,7 +521,7 @@ class NoFuSTX:
 
         return changed
 
-    def load_settings(self):
+    def load_settings(self): # <--- Laden der Konfiguration aus der JSON-Datei, mit Reparatur der Struktur bei fehlenden oder neuen Feldern
         if not os.path.exists(self.config_file):
             legacy_config = os.path.join(base_path, "nofustx_config.json")
             if os.path.exists(legacy_config):
@@ -469,7 +547,7 @@ class NoFuSTX:
             self.config = copy.deepcopy(self.default_config)
             self.save_settings()
         
-    def check_dependencies(self):
+    def check_dependencies(self): # <--- Abhängigkeiten Prüfen und den Nutzer informieren, welche optionalen Module fehlen, damit er sie installieren kann, um alle Funktionen nutzen zu können!
         missing = []
         # GUI / Karten
         if tkintermapview is None:
@@ -518,7 +596,7 @@ class NoFuSTX:
                 + "Achtung unter Linux ist wichtig das Sie auch Folgende Pakete benötigen:\n\nsudo apt install libasound2-dev portaudio19-dev"
             )
             try:
-                # Anstatt Messagebox ein kopierbares Textfeld öffnen !!!
+                # Statt einer Messagebox ein kopierbares Textfeld öffnen.
                 win = tk.Toplevel()
                 win.title("NoFuS-TX: fehlende Abhängigkeiten")
                 win.geometry("500x300")
@@ -535,7 +613,7 @@ class NoFuSTX:
     # NoFuS-TX - LAN SYNC SEKTION (P2P Map Sharing)
     # =============================================================================
 
-    def init_lan_sync(self, statusbar_parent):
+    def init_lan_sync(self, statusbar_parent): # <--- Initialisiert das LAN-Sync System, das die offline_tiles.db über das lokale Netzwerk mit anderen NoFuS-Stationen teilt, damit alle Teilnehmer schnellere Kartenupdates erhalten können, ohne dass jeder die Daten einzeln aus dem Internet laden muss. Es besteht aus einem Broadcast-Sender, der regelmäßig die Verfügbarkeit von Updates ankündigt, einem Broadcast-Listener, der auf Ankündigungen anderer Stationen hört und bei Bedarf die Daten von ihnen anfordert, und einem HTTP-Server, der die offline_tiles.db für andere Stationen bereitstellt, wenn sie es anfordern.
         """Initialisiert das UI-Widget und startet die Hintergrund-Dienste"""
         # 1. UI Widget in der Mitte der Statusleiste
         self.sync_frame = tk.Frame(statusbar_parent, bd=1, relief="sunken", bg="black")
@@ -554,7 +632,7 @@ class NoFuSTX:
         self.write_session_log(f"[{self.utc_iso_timestamp()}] LAN-Sync initialisiert. Hintergrunddienste gestartet.")
         print("[LAN-Sync] Initialisiert: Broadcast-Sender, Broadcast-Listener und HTTP-Server laufen im Hintergrund.")
 
-    def _get_local_tile_count(self):
+    def _get_local_tile_count(self): # <--- Zählt die Anzahl der lokalen Kartenkacheln, um sie in den Ankündigungen zu teilen und mit anderen Stationen zu vergleichen. Je mehr Kacheln, desto aktueller ist die Karte, aber es braucht auch mehr Speicherplatz. So können Stationen mit weniger Kacheln erkennen, dass es ein Update gibt, und die Daten von Stationen mit mehr Kacheln anfordern, um ihre Karten zu aktualisieren.
         """Zählt, wie viele Kartenkacheln wir aktuell haben"""
         db_path = os.path.join(base_path, "off_Maps", "offline_tiles.db")
         # print(f"[LAN-Sync] Überprüfe lokale Tiles in {db_path}")
@@ -566,7 +644,7 @@ class NoFuSTX:
             return count
         except Exception: return 0
 
-    def _run_http_server(self):
+    def _run_http_server(self): # <--- Startet einen einfachen HTTP-Server, der die offline_tiles.db für andere Stationen bereitstellt, wenn sie es anfordern. Er lauscht auf Port 27245 und liefert die Datei aus dem off_Maps-Ordner aus. Andere Stationen können dann die URL http://IP_DES_PARTNERS:27245/off_Maps/offline_tiles.db verwenden, um die Daten herunterzuladen und ihre Karten zu aktualisieren.
         """Stellt die offline_tiles.db via HTTP bereit"""
         port = 27245
         # Es braucht einen Handler, der nur die tiles.db ausliefert
@@ -578,7 +656,7 @@ class NoFuSTX:
         except Exception as e:
             print(f"[*] LAN-Server Port belegt: {e}")
 
-    def _run_broadcast_sender(self):
+    def _run_broadcast_sender(self): # <--- Sendet alle 15 Sekunden eine Ankündigung im lokalen Netzwerk, dass diese Station verfügbar ist und wie viele Kartenkacheln sie hat. Andere Stationen können diese Ankündigungen empfangen und entscheiden, ob sie die Daten von dieser Station anfordern wollen, um ihre Karten zu aktualisieren. Die Ankündigung enthält auch die IP-Adresse und den Port des HTTP-Servers, damit andere Stationen wissen, wo sie die Daten herunterladen können.
         """Kündigt alle 15 Sekunden im Netzwerk an"""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -611,7 +689,7 @@ class NoFuSTX:
             time.sleep(15)
     
 
-    def _run_broadcast_listener(self):
+    def _run_broadcast_listener(self): # <--- Lauscht auf Ankündigungen anderer NoFuS-Stationen im lokalen Netzwerk. Wenn eine Ankündigung empfangen wird, prüft sie, ob die Partner-Station mehr Kartenkacheln hat als die lokale Station. Wenn ja, zeigt sie dem Nutzer an, dass ein Update verfügbar ist, und bietet die Möglichkeit, die Daten von der Partner-Station herunterzuladen und zu integrieren. Wenn der Nutzer zustimmt, startet sie den Download und den Abgleich der Kartenkacheln. Wenn der Nutzer ablehnt oder wenn die Partner-Station nicht mehr Kacheln hat als die lokale Station, zeigt sie den entsprechenden Status an.
         """Lauscht auf andere NoFuS-Stationen"""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind(('', 5005))
@@ -635,7 +713,7 @@ class NoFuSTX:
                             self.sync_icon.config(text="🟢", fg="green")
                             self.sync_label.config(text=f"Update von {remote_call} verfügbar!")
                             
-                            # 2. Direkt die schlaue merge_tiles aufrufen. 
+                            # 2. Direkt die Funktion merge_tiles aufrufen.
                             # Sie prüft den Speicher und fragt den Operator mit exakten MB-Angaben!
                             self.merge_tiles(partner_url)
                         else:
@@ -651,7 +729,7 @@ class NoFuSTX:
             except Exception: 
                 pass
 
-    def merge_tiles(self, other_db_url):
+    def merge_tiles(self, other_db_url): # <--- Führt die Kartenkacheln aus der Partner-Station in die lokale offline_tiles.db ein, nachdem geprüft wurde, dass genügend Speicherplatz vorhanden ist und der Nutzer dem Download zugestimmt hat. Sie lädt die Partner-DB herunter, öffnet sie zusammen mit der lokalen DB, führt die Kacheln zusammen (ohne Duplikate) und speichert das Ergebnis in der lokalen DB. Nach dem Abgleich zeigt sie den Erfolg an und aktualisiert die UI entsprechend.
         """Prüft den Speicherplatz, fragt den User und führt fremde Tiles ein."""
           # Für die Speicherplatz-Prüfung
         
@@ -748,7 +826,11 @@ class NoFuSTX:
                     print(f"[LAN-Sync] Warnung: Temp-Datei konnte nicht gelöscht werden: {e}")
 
     # --------- USERCALL SETZEN ----------
-    def set_USERCALL(self, callsign="NOCALL"):
+    def set_USERCALL(self, callsign="NOCALL"): # <--- Setzt Das Globale Rufzeichen in der Software.
+        try:
+            callsign = self.config.get("USERCALL", {}).get("CALLSINGEN", "NOCALL")
+        except Exception:
+            callsign = "NOCALL"
         usercall_win = tk.Toplevel(self.root)
         usercall_win.title("Rufzeichen setzen - NoFuS-TX")
         usercall_win.geometry("400x300")
@@ -768,7 +850,7 @@ class NoFuSTX:
 
         tk.Button(usercall_win, text="Speichern", command=save_callsign).pack(pady=10)
     # --------- FREQUENZENLADUNG & -SPEICHERUNG ----------
-    def load_frequencies(self):
+    def load_frequencies(self): # <--- Laden der Frequenzen aus der JSON-Datei, mit Übernahme von alten Frequenzen aus einer Legacy-Datei, falls die neue Datei noch nicht existiert, damit Nutzer ihre benutzerdefinierten Frequenzen behalten können, wenn sie von einer älteren Version aktualisieren.
         if not os.path.exists(self.frequency_file):
             legacy_frequencies = os.path.join(base_path, "notfunk_freqs.json")
             if os.path.exists(legacy_frequencies):
@@ -789,13 +871,13 @@ class NoFuSTX:
             except Exception:
                 self.frequencies = self.default_frequencies
 
-    def save_settings(self):
+    def save_settings(self): # <--- Speichern der aktuellen Konfiguration in der JSON-Datei, damit die Einstellungen auch nach einem Neustart erhalten bleiben. Es wird die gesamte Config-Struktur in die Datei geschrieben, damit alle Änderungen und Anpassungen dauerhaft gespeichert werden.
         os.makedirs(self.config_folder, exist_ok=True)
         with open(self.config_file, "w") as f:
             json.dump(self.config, f, indent=4)
 
     # ---------- EINSATZ-SESSION-LOG ----------
-    def init_session_log(self):
+    def init_session_log(self): # <--- Initialisiert die Einsatz-Session-Logdatei, die alle wichtigen Ereignisse und Aktionen während einer Einsatz-Session aufzeichnet. Beim Start der App wird eine neue Logdatei mit der Startzeit im Namen erstellt, und beim Beenden der App wird die Datei mit der Stop-Zeit umbenannt
         """
         Erstellt zu Programmstart eine Einsatz-Logdatei mit Startzeit im Namen.
         Beim späteren Programmende wird die Datei auf einen Namen mit Start- und
@@ -835,7 +917,7 @@ class NoFuSTX:
         except Exception:
             pass
 
-    def write_session_log(self, text):
+    def write_session_log(self, text): # <--- Schreibt eine Zeile in die aktuelle Einsatz-Session-Logdatei, damit alle wichtigen Ereignisse und Aktionen während der Session dokumentiert werden. Es wird geprüft, ob die Logdatei geöffnet ist, bevor der Text geschrieben wird, um Fehler zu vermeiden.
         """
         Schreibt eine Zeile in die aktuelle Einsatz-Session-Datei.
         """
@@ -847,7 +929,7 @@ class NoFuSTX:
         except Exception:
             pass
 
-    def finalize_session_log(self):
+    def finalize_session_log(self): # <--- Ergänzt die Stop-Zeit in der Einsatz-Session-Logdatei und benennt die Datei von "RUNNING" auf ein endgültiges Format mit Start- und Stop-Zeit um, damit die Logdatei nach dem Einsatz korrekt benannt und abgeschlossen ist. Es wird geprüft, ob die Logdatei geöffnet ist, bevor die Stop-Zeit eingetragen und die Datei umbenannt wird, um Fehler zu vermeiden.
         """
         Ergänzt beim Programmende die Stop-Zeit und benennt die Datei auf
         'einsatz-STARTUTC_STOPUTC.txt' um.
@@ -888,7 +970,7 @@ class NoFuSTX:
             # Wenn Umbenennen scheitert, bleibt die RUNNING-Datei erhalten
             pass
 
-    def on_close(self):
+    def on_close(self): # <--- Close Handler für das Schließen des Hauptfensters, der sicherstellt, dass alle laufenden Prozesse sauber beendet werden, der Einsatz-Session-Log korrekt abgeschlossen wird und die Verbindung zum Meshtastic-Gerät geschlossen wird, damit keine Ressourcen offen bleiben und die Logdatei mit einem Stop-Zeitstempel versehen wird.
         """
         Wird beim Schließen des Hauptfensters aufgerufen.
         Sorgt dafür, dass das Einsatz-Session-Log sauber abgeschlossen wird.
@@ -901,7 +983,7 @@ class NoFuSTX:
             self.interface.close() # Schließt die Verbindung zum Meshtastic-Gerät
 
     # ---------- APRS GRUND-INITIALISIERUNG ----------
-    def init_aprs_system(self):
+    def init_aprs_system(self): # <--- Initialisiert das APRS-System, indem es die Empfangsthreads für APRS-IS und AX.25 startet, die Update-Queue im GUI-Thread periodisch verarbeitet und einen optional gespeicherten HOME-Marker auf der Karte lädt und setzt, damit die App bereit ist, APRS-Daten zu empfangen und anzuzeigen.
         """
         Initialisiert das passive APRS-Lagesystem:
         - Start der Empfangsthreads (APRS-IS und AX.25)
@@ -951,28 +1033,40 @@ class NoFuSTX:
             except Exception:
                 self.home_marker = None
 
-        # Empfangs-Threads starten (listen-only Weil kein Lizens checkt) – die Threads stellen Pakete in die aprs_update_queue, die im GUI-Thread arbeitet
-        modes = self.config.get("MODES", [])
+        # Empfangs-Threads starten (nur zuhören; keine Lizenzprüfung) – die Threads stellen Pakete in die aprs_update_queue, die im GUI-Thread verarbeitet wird.
+        # Empfangs-Threads starten (nur zuhören; keine Lizenzprüfung)
+        modes = self.config.get("MODES", {})  # Hinweis: Vorher stand hier modes = self.config.get("MODES", []) – falls es ein Dictionary ist, nutzen wir {} als Fallback
 
+        # 1. APRS-IS Internet Stream
         aprs_is_conf = modes.get("APRS_IS", {})
         if aprs_is_conf.get("active"):
             t_is = threading.Thread(target=self.aprs_is_worker, daemon=True)
             t_is.start()
 
+        # 2. Klassische Linux AX.25 Ports
         for port in modes.get("AX25_PORTS", []):
-            if port.get("active"):
+            if port.get("active") and port.get("hardware") == "ax" and port.get("aprs") != False:
                 device = port.get("device") or "ax0"
                 t_ax = threading.Thread(
                     target=self.ax25_worker, args=(device,), daemon=True
                 )
                 t_ax.start()
+            elif port.get("hardware","") == "kiss" and port.get("aprs") != False:
+                self.init_nofus_v2_hardware()
+            
+
+        # 3. NEU: Direkter LoRa-APRS Empfänger via T-Beam (KISS)
+        lora_conf = modes.get("LORA_APRS", {})
+        if lora_conf.get("active"):
+            t_lora = threading.Thread(target=self.lora_aprs_worker, daemon=True)
+            t_lora.start()
 
         # Queue im GUI-Thread regelmäßig abarbeiten
         self.root.after(500, self.process_aprs_queue)
         
 
     # ---------- APRS HILFSFUNKTIONEN ----------
-    def get_home_image(self):
+    def get_home_image(self): # <--- Liefert (und cached) ein spezielles HOME-Icon, falls vorhanden. Erwarteter Dateiname im Unterordner ./icons: - home.png oder home.gif. Wenn die Datei gefunden und geladen werden kann, wird sie im Cache gespeichert und zurückgegeben. Wenn die Datei nicht gefunden wird oder ein Fehler beim Laden auftritt, wird None zurückgegeben und im Cache vermerkt, damit zukünftige Aufrufe schneller reagieren können.
         """
         Liefert (und cached) ein spezielles HOME-Icon, falls vorhanden.
         Erwarteter Dateiname im Unterordner ./icons:
@@ -996,7 +1090,7 @@ class NoFuSTX:
         self.aprs_icon_cache[key] = None
         return None
 
-    def get_symbol_image(self, symbol_table, symbol_code):
+    def get_symbol_image(self, symbol_table, symbol_code): # <--- Verbesserte Suche: Erzwingt gültige APRS-Tabellen (Hex 2f oder 5c).
         """
         Verbesserte Suche: Erzwingt gültige APRS-Tabellen (Hex 2f oder 5c).
         """
@@ -1037,7 +1131,7 @@ class NoFuSTX:
         self.aprs_icon_cache[key] = None
         return None
 
-    def _apply_icon_to_marker(self, marker, image):
+    def _apply_icon_to_marker(self, marker, image): # <--- Versteckt den Standard-Kartenmarker (Kreis/Dreieck) und justiert das Icon (unten-mittig), damit benutzerdefinierte APRS-Symbole korrekt angezeigt werden können, ohne dass die Standardmarker die Sichtbarkeit stören. Es wird geprüft, ob der Marker existiert, bevor versucht wird, die Standardformen auszublenden und das Icon zu platzieren, um Fehler zu vermeiden.
         """
         Versteckt den Standard-Kartenmarker (Kreis/Dreieck) und
         justiert das Icon (unten-mittig).
@@ -1094,10 +1188,9 @@ class NoFuSTX:
             except Exception:
                 pass
 
-    def extract_aprs_position(self, packet):
+    def extract_aprs_position(self, packet): # <--- Extrahiert aus einem von aprslib gelieferten Packet-Dict die für die Lagedarstellung relevanten Daten.
         """
-        Extrahiert aus einem von aprslib gelieferten Packet-Dict
-        die für die Lagedarstellung relevanten Daten.
+        Extrahiert aus einem von aprslib gelieferten Packet-Dict die für die Lagedarstellung relevanten Daten.
         Erwartete Struktur (typisch aprslib.parse / IS consumer):
             - latitude / longitude
             - from (Rufzeichen)
@@ -1133,7 +1226,7 @@ class NoFuSTX:
             "symbol_code": symbol_code,
         }
     
-    def extract_aprs_weather(self, packet):
+    def extract_aprs_weather(self, packet): # <--- Verbesserte Extraktion, die auch Unter-Dicts von aprslib prüft.
         """Verbesserte Extraktion, die auch Unter-Dicts von aprslib prüft."""
         if not isinstance(packet, dict):
             return None
@@ -1151,8 +1244,8 @@ class NoFuSTX:
 
         # Nur wenn mindestens ein relevanter Wert da ist
         if all(v is None for v in [temp, hum, press, wind_s]):
-            # Sonderfall: Wenn nichts gefunden wurde, prüfen kurz im Kommentar
-            # Manche Stationen senden Wetter nur als Text im Kommentar
+            # Sonderfall: Wenn nichts gefunden wurde, wird kurz im Kommentar nachgesehen.
+            # Manche Stationen senden Wetter nur als Text im Kommentar.
             comment = packet.get("comment", "")
             if "t" not in comment.lower(): # Grober Check
                 return None
@@ -1168,7 +1261,7 @@ class NoFuSTX:
         }
 
 
-    def handle_weather_event(self, event):
+    def handle_weather_event(self, event): # <--- Verarbeitet ein Wetter-Event, das von den APRS-Empfangs-Threads in die aprs_update_queue gestellt wird, aktualisiert die entsprechenden Labels im Wetter-Tab und fügt einen Eintrag in die Listbox auf der rechten Seite hinzu, damit die neuesten Wetterdaten sichtbar und nachvollziehbar sind.
         """
         Nimmt die Wetterdaten aus der Queue entgegen und aktualisiert die 
         Labels im Wetter-Tab (tab_wx).
@@ -1260,7 +1353,7 @@ class NoFuSTX:
         except Exception as e:
             print(f"Fehler bei der Wetter-Anzeige: {e}")
 
-    def update_weather_average(self):
+    def update_weather_average(self): # <--- Berechnet den Durchschnitt der letzten 8 Werte für jede Wetter-Kennzahl und aktualisiert die entsprechenden Labels im Durchschnittsbereich, damit die Nutzer einen Überblick über die jüngsten Wettertrends erhalten.
         def avg(key):
             values = self.wx_metric_history.get(key, [])
             if not values:
@@ -1301,7 +1394,7 @@ class NoFuSTX:
             self.wx_avg_vars["rain"].set("-- mm")
 
     # ---------- APRS HINTERGRUND-THREADS ----------
-    def aprs_is_worker(self):
+    def aprs_is_worker(self): # <--- Empfängt APRS-IS Daten über das Internet, analysiert die Pakete auf Positions- und Wetterinformationen und stellt die relevanten Daten in die aprs_update_queue, damit sie im GUI-Thread verarbeitet und angezeigt werden können. Es wird eine Verbindung zum APRS-IS Server hergestellt, ein Filter für die Empfangsreichweite um die HOME-Position gesetzt und eingehende Pakete werden kontinuierlich ausgewertet. Bei Verbindungsfehlern wird ein erneuter Verbindungsversuch nach 30 Sekunden unternommen.
         """
         Empfang von APRS-IS über aprslib.IS (listen-only).
         Keine Beacon- oder Sende-Funktion – reine Auswertung eingehender Pakete.
@@ -1311,14 +1404,14 @@ class NoFuSTX:
 
         modes = self.config.get("MODES", {})
         conf = modes.get("APRS_IS", {})
-        call = conf.get("call", "NOCALL")
+        call = self.config.get("USERCALL", {}).get("CALLSINGEN", "NOCALL")
         server = conf.get("server", "euro.aprs2.net")
         port = int(conf.get("port", "14580"))
         passwd = conf.get("passcode", "-1")
         range_km = conf.get("range_km", 20)  # Empfangsbereich in Kilometern um die HOME-Position
 
         if not call or call == "NOCALL":
-            # Ohne gültiges Rufzeichen nicht verbinden mit APRS-IS. Kein call check möglich, in der 3.0 umsetzen ?!
+            # Ohne gültiges Rufzeichen wird keine Verbindung zu APRS-IS aufgebaut.
             self.aprs_update_queue.put(
                 {
                     "type": "log",
@@ -1364,7 +1457,11 @@ class NoFuSTX:
                 # print(f"APRS-IS Filter: {filter_str}") # Debug-Ausgabe
                 
                 is_conn.set_filter(filter_str)  # Beispiel: Filter auf 100 km um HOME-Position
-                is_conn.connect()
+                try:
+                    is_conn.connect()
+                except Exception as err:
+                    print(f"[APRS-IS] Fehler {err}")
+                    
                 self.aprs_update_queue.put(
                     {
                         "type": "log",
@@ -1374,7 +1471,7 @@ class NoFuSTX:
                 # consumer() blockiert in dieser Thread-Funktion, liefert Pakete an _callback
                 is_conn.consumer(callback=_callback, raw=False)
                 
-            except Exception:
+            except Exception as e:
                 self.aprs_update_queue.put(
                     {
                         "type": "log",
@@ -1382,6 +1479,7 @@ class NoFuSTX:
                     }
                 )
                 time.sleep(30)
+                print(f"[APRS-IS] Fehler {e}")
 
     def ax25_worker(self, device):
         """
@@ -1424,7 +1522,7 @@ class NoFuSTX:
             }
         )
 
-        # Zeilenweise Ausgabe von axlisten auswerten
+        # Zeilenweise Ausgabe von axlisten auswerten (könnte obsolet werden, sobald der KISS-Worker vollständig eingebaut ist und keine Kernelmodule mehr benötigt werden).
         for line in proc.stdout: # type: ignore
             line = line.strip()
             if not line:
@@ -1546,8 +1644,139 @@ class NoFuSTX:
             except Exception:
                 pass
 
+    def lora_aprs_worker(self): # <--- Ist für die 433 MHz LoraAPRS Boards (T-Beam, KISS-TNC) gedacht, die ihre empfangenen Pakete über eine serielle Schnittstelle (USB oder TCP) im KISS-Format bereitstellen. Der Worker liest kontinuierlich die seriellen Datenströme, erkennt die KISS-Frames, extrahiert die AX.25-Payloads, dekodiert die Rufzeichen und füttert den internen APRS-Parser, damit auch diese LoRa-APRS Pakete in der App angezeigt werden können.
+        """
+        Direkter Empfang von LoRa-APRS Daten von einem T-Beam oder KISS-TNC via USB/KISS-TCP.
+        Entpackt die seriellen KISS-Datenströme, rekonstruiert die AX.25-Rufzeichen
+        und füttert den internen APRS-Parser für Lagedarstellung und Wetter.
+        """
+        if aprslib is None:
+            return
+
+        # Konfiguration laden (Pfade und Parameter dynamisch halten)
+        modes = self.config.get("MODES", {})
+        conf = modes.get("LORA_APRS", {})
+        port_name = conf.get("port", "/dev/ttyUSB0")  # 'COM11' unter Windows
+        baud_rate = int(conf.get("baud", "115200"))   # Standard für CA2RXU Firmware
+
+        # Logge den Startversuch in der GUI
+        self.aprs_update_queue.put({
+            "type": "log",
+            "message": f"{self.get_utc_now().strftime('%H:%M:%S')} : Starte LoRa-APRS auf {port_name} ({baud_rate} Baud)...",
+        })
+
+        try:
+            import serial
+            ser = serial.Serial(port=port_name, baudrate=baud_rate, timeout=0.1)
+        except Exception as e:
+            self.aprs_update_queue.put({
+                "type": "log",
+                "message": f"{self.get_utc_now().strftime('%H:%M:%S')} : LoRa-Fehler: Schnittstelle {port_name} nicht erreichbar ({e}).",
+            })
+            return
+
+        self.aprs_update_queue.put({
+            "type": "log",
+            "message": f"{self.get_utc_now().strftime('%H:%M:%S')} : LoRa-APRS Empfänger aktiv auf {port_name}.",
+        })
+
+        buffer = b""
+        FEND = b'\xc0'
+
+        # Helfer für den AX.25-Rufzeichendecoder
+        def _decode_callsign(byte_chunk):
+            call = ""
+            for b in byte_chunk[:6]:
+                char = chr(b >> 1)
+                if char.isalnum() or char == ' ':
+                    call += char
+            if len(byte_chunk) >= 7:
+                ssid = (byte_chunk[6] >> 1) & 0x0F
+            else:
+                ssid = 0
+            call = call.strip()
+            return f"{call}-{ssid}" if ssid > 0 else call
+
+        while True:
+            try:
+                chunk = ser.read(256)
+                if not chunk:
+                    continue
+                
+                buffer += chunk
+                
+                # Pakete umschlossen von FEND-Bytes aus dem persistenten Puffer schneiden
+                while buffer.count(FEND) >= 2:
+                    start_idx = buffer.find(FEND)
+                    end_idx = buffer.find(FEND, start_idx + 1)
+                    
+                    if end_idx != -1:
+                        kiss_frame = buffer[start_idx : end_idx + 1]
+                        buffer = buffer[end_idx + 1 :]
+                        
+                        if len(kiss_frame) <= 3:
+                            continue
+
+                        raw_ax25 = kiss_frame[2:-1]  # FENDs und KISS-Cmd entfernen
+                        
+                        if len(raw_ax25) < 14:
+                            continue
+
+                        # Ziel und Absender extrahieren (je exakt 7 Bytes)
+                        target_call = _decode_callsign(raw_ax25[0:7])
+                        source_call = _decode_callsign(raw_ax25[7:14])
+                        
+                        # Dynamische Payload-Trennung via AX.25 PID-Byte (0xF0)
+                        if b'\xf0' in raw_ax25:
+                            pid_idx = raw_ax25.find(b'\xf0')
+                            payload_bytes = raw_ax25[pid_idx + 1:]
+                        else:
+                            payload_bytes = raw_ax25[14:]
+                            while len(payload_bytes) > 0 and payload_bytes[0] < 0x20:
+                                payload_bytes = payload_bytes[1:]
+
+                        payload_string = payload_bytes.decode('latin-1', errors='ignore')
+                        
+                        # Synthetisiere den APRS-IS Klartext-String für deine aprslib.parse()
+                        aprs_is_string = f"{source_call}>{target_call}:{payload_string}"
+                        
+                        try:
+                            # Parse das Paket über deine Hauptfunktion
+                            pkt = aprslib.parse(aprs_is_string)
+                            
+                            # 1. Wetter extrahieren und in Queue werfen
+                            wx = self.extract_aprs_weather(pkt)
+                            if wx:
+                                self.aprs_update_queue.put({
+                                    "type": "weather",
+                                    "callsign": wx["src"],
+                                    "wx_data": wx
+                                })
+                            
+                            # 2. Position extrahieren und in Queue werfen
+                            pos = self.extract_aprs_position(pkt)
+                            if pos:
+                                pos["source_type"] = f"LoRa:{port_name}"
+                                self.aprs_update_queue.put({
+                                    "type": "position", 
+                                    **pos
+                                })
+                                
+                        except aprslib.exceptions.ParseError:
+                            # Defekte oder unvollständige Funk-Pakete ignorieren
+                            continue
+                    else:
+                        break
+            except Exception as e:
+                # Bei Verbindungsabrissen (z.B. USB-Kabel gezogen) Thread sauber loggen und beenden
+                self.aprs_update_queue.put({
+                    "type": "log",
+                    "message": f"{self.get_utc_now().strftime('%H:%M:%S')} : LoRa-APRS Thread wegen Fehler beendet ({e}).",
+                })
+                break
+
     # ---------- HOME-POSITION ----------
-    def set_home_position_from_click(self, coords):
+    def set_home_position_from_click(self, coords): # <--- Position Per Mausklick (Rechts) setzen!
         """
         Callback für das Rechtsklick-Menü der Karte.
         Erwartet von tkintermapview ein Tupel (lat, lon).
@@ -1597,7 +1826,7 @@ class NoFuSTX:
             except Exception:
                 pass
 
-    def _remove_marker(self, marker):
+    def _remove_marker(self, marker): # <--- Marker entfernen, wenn er nicht mehr benötigt wird (z.B. bei Positionsänderung eines APRS-Objekts oder beim Aktualisieren der HOME-Position). Es wird geprüft, ob der Marker existiert, bevor versucht wird, ihn von der Karte zu entfernen, um Fehler zu vermeiden.
         """Versucht, einen Marker vom Kartenlayer zu entfernen."""
         if not marker:
             return
@@ -1609,7 +1838,7 @@ class NoFuSTX:
         except Exception:
             pass
 
-    def get_system_printers(self):
+    def get_system_printers(self): # <--- Drucker Erkennen
         """
         Liefert eine Liste verfügbarer Systemdrucker zurück (sofern ermittelbar).
         - Unter Linux/macOS wird `lpstat -p` genutzt.
@@ -1687,7 +1916,7 @@ class NoFuSTX:
         unique = list(dict.fromkeys(printers))
         return unique
 
-    def print_message(self, text):
+    def print_message(self, text): # <--- Druckt eine Mitteilung
         """
         Versucht, die übergebene Meldung auf den ausgewählten Systemdrucker zu drucken.
         - Unter Linux/macOS wird `lp` verwendet (mit gesetztem Druckernamen, falls vorhanden).
@@ -1720,7 +1949,7 @@ class NoFuSTX:
             messagebox.showerror("Drucken", f"Druckfehler:\n{e}")
 
     # --------- UI-AUFBAU & -ELEMENTE ----------
-    def setup_ui(self):
+    def setup_ui(self): # <--- Baut die gesamte Benutzeroberfläche auf, inklusive Menü, Statusleiste, Telemetrie-Balken und Notebook-Reiter. Es wird eine klare Struktur verfolgt, um die verschiedenen UI-Komponenten übersichtlich zu organisieren und die spätere Wartung zu erleichtern.
         # 1. Menü initialisieren
         self.setup_menu()
         
@@ -1839,7 +2068,7 @@ class NoFuSTX:
         self.update_aprs_on_map_initial()
         self.get_current_map_zoom()
     
-    def no_sdr_found(self):
+    def no_sdr_found(self): # <--- Kein SDR Gefunden dann Anzeige im SDR Tab
         label = tk.Label(self.tab_sdr, text="Kein SDR gefunden. Bitte überprüfen Sie die Verbindung und die Treiber.\nNach Anschluss oder geladenem Treiber Starten Sie das Programm erneut!", font=("Arial", 12), fg="red")
         label.pack(pady=20)
     def setup_weather_tab(self):
@@ -1921,7 +2150,7 @@ class NoFuSTX:
 
 
     # --- SDR ---
-    def chk_sdr(self):
+    def chk_sdr(self): # <--- Prüft die anwesenheit eines Unterstüzten SDRs (RTL-SDR, Airspy, HackRF, etc.) durch systemabhängige Befehle. Es wird die Ausgabe auf bekannte SDR-Hersteller gefiltert. Das Ergebnis wird geloggt und ggf. eine Warnung ausgegeben, wenn kein SDR gefunden wurde.
         No_sdr = False
         print("[SDR]Prüfe Anwesenheit von SDRs...")
         self.write_session_log(f"[{self.utc_iso_timestamp()}] Prüfe Anwesenheit von SDRs...")
@@ -1954,7 +2183,7 @@ class NoFuSTX:
             No_sdr = False
         return No_sdr
 
-    def parse_to_hz(self, freq_str):
+    def parse_to_hz(self, freq_str): # <--- Wandelt eine Frequenzangabe mit Einheiten (MHz, kHz) in eine reine Hertz-Angabe als Integer um. Es wird versucht, die Zahl zu extrahieren und entsprechend der Einheit umzurechnen. Fehlerhafte Eingaben führen zu einem Rückgabewert von 0 und werden geloggt.
         """Wandelt '145.500 MHz' oder '3.760 kHz' in Hertz (int) um."""
         try:
             # Leerzeichen säubern und splitten (z.B. ["145.500", "MHz"])
@@ -1974,7 +2203,7 @@ class NoFuSTX:
             print(f"Fehler beim Parsen der Frequenz {freq_str}: {e}")
             return 0
 
-    def sdr_remote_cmd(self, command):
+    def sdr_remote_cmd(self, command): # <--- Fernsteuerung von Gqrx über das TCP-Protokoll. Es wird ein separater Thread gestartet, um die Verbindung herzustellen und den Befehl zu senden, damit die Haupt-UI nicht blockiert wird. Fehler bei der Verbindung oder beim Senden werden geloggt.
         """Sendet Befehle an Gqrx via TCP (Port 7356)"""
         def _socket_task():
             host = "127.0.0.1"
@@ -1989,7 +2218,7 @@ class NoFuSTX:
 
         threading.Thread(target=_socket_task, daemon=True).start()
 
-    def apply_sdr_settings(self, freq, mode):
+    def apply_sdr_settings(self, freq, mode): # <--- Sendet die ausgewählte Frequenz und den Modus entweder an Gqrx über das TCP-Protokoll oder startet einen direkten RTL-SDR Prozess, abhängig von der Konfiguration. Es werden auch die UI-Felder im SDR-Tab aktualisiert, damit sie den aktuellen Einstellungen entsprechen.
         """Sendet Frequenz und Modus an Gqrx und aktualisiert die UI-Felder"""
         sdr_backend = self.config.get("SDR", {}).get("sdr_mode", "")
         # print(f"SDR Backend: {sdr_backend}") #Debug ausgabe
@@ -2010,7 +2239,7 @@ class NoFuSTX:
         if hasattr(self, 'sdr_mode_var'):
             self.sdr_mode_var.set(mode)
     
-    def start_direct_sdr(self, freq, mode):
+    def start_direct_sdr(self, freq, mode): # <--- Startet einen direkten RTL-SDR Prozess mit den angegebenen Frequenz- und Modus-Einstellungen. Es wird sichergestellt, dass vorherige SDR-Prozesse sauber beendet werden, um Konflikte zu vermeiden. Die Audioausgabe erfolgt über ffplay, um die Latenz zu minimieren. Es werden auch die konfigurierten Parameter für Samplingrate und De-Emphasis berücksichtigt.
         self.stop_direct_sdr()
 
         # Hardware-Parameter
@@ -2040,13 +2269,13 @@ class NoFuSTX:
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def stop_direct_sdr(self):
+    def stop_direct_sdr(self): # <--- Stoppt den Direkten SDR
         if hasattr(self, 'sdr_process') and self.sdr_process:
             # Beendet die ganze Prozess-Gruppe (rtl_fm UND aplay)
             os.killpg(os.getpgid(self.sdr_process.pid), signal.SIGTERM)
             self.sdr_process = None
 
-    def setup_sdr_tab(self):
+    def setup_sdr_tab(self): # <--- Den SDR-Tab Einrichten (UI Zusatz)
         # 1. Daten laden (Nutzt deine existierende Funktion)
         #self.chk_sdr()
         self.load_frequencies()
@@ -2139,7 +2368,7 @@ class NoFuSTX:
         info_lbl = ttk.Label(sdr_container, text="ACHTUNG! Nicht jeder SDR-Stick kann den ganzen angebotenen Frequenzbereich!\nGqrx Remote (7356) muss aktiv sein.", font=("Arial", 8, "italic"))
         info_lbl.pack(side="bottom", pady=5)
 
-    def update_mhz_display(self, *args):
+    def update_mhz_display(self, *args): # <--- Aktualisiert die Anzeige der Frequenz in MHz, wenn sich die Hz-Eingabe ändert. Es wird versucht, die aktuelle Hz-Zahl zu parsen und in MHz umzurechnen, um sie benutzerfreundlich anzuzeigen. Fehlerhafte Eingaben führen zu einer Platzhalteranzeige von "--- MHz".
         """Rechnet Hz live in MHz um für bessere Lesbarkeit"""
         try:
             hz_val = float(self.sdr_freq_var.get())
@@ -2149,7 +2378,7 @@ class NoFuSTX:
         except:
             self.mhz_label.config(text="--- MHz")
     # --------- UI-GRUNDSTRUKTUR & -ELEMENTE & Menü ----------
-    def setup_menu(self):
+    def setup_menu(self): # <--- Menü einrichten mit den Hauptkategorien "Datei", "Einstellungen" und "Hilfe". Unter "Datei" gibt es Optionen zum Beenden, Drucken des Einsatz-Logs, Setzen des Rufzeichens und erneuten Prüfen der Abhängigkeiten. Unter "Einstellungen" können die Hardware & Modi konfiguriert und eine externe Konsole geöffnet werden. Das "Hilfe"-Menü bietet Zugriff auf das Handbuch und Informationen über NoFuS-TX. Alle Menüaktionen sind mit entsprechenden Funktionen verknüpft, um die gewünschten Aktionen auszuführen.
         m = tk.Menu(self.root)
         self.root.config(menu=m)
 
@@ -2174,14 +2403,14 @@ class NoFuSTX:
         help_m.add_command(label="Über NoFuS-TX", command=self.show_about_window)      
 
 
-    def show_manual_window(self):
+    def show_manual_window(self): # <--- Den Hilfe-Tab aufrufen, der das Handbuch und weitere Informationen enthält. Es wird versucht, den entsprechenden Tab im Unter-Notebook auszuwählen und den Haupt-Hilfe-Tab zu aktivieren. Fehler bei der Anzeige führen zu einer Messagebox, die den Benutzer informiert, dass der Hilfebereich derzeit nicht verfügbar ist.
         try:
             self.help_notebook.select(self.sub_tab_manual)
             self.tabs.select(self.tab_help_main)
         except Exception:       
             messagebox.showinfo("Hilfe", "Der Hilfebereich ist derzeit nicht verfügbar.")
 
-    def show_external_terminal_window(self):
+    def show_external_terminal_window(self): # <--- Die externe Konsole öffnen
         
         messagebox.showinfo("Externe Konsole", "Eine externe Konsole wird geöffnet. Bitte beachten Sie, dass dies von Ihrem Betriebssystem abhängt und möglicherweise nicht auf allen Systemen funktioniert.")
 
@@ -2201,7 +2430,7 @@ class NoFuSTX:
 
    # --- OS-Terminal Tab einrichten ---
     
-    def setup_os_terminal_tab(self):
+    def setup_os_terminal_tab(self): # <--- Den OS-Terminal Tab einrichten. Zuerst wird ein Haupt-Container erstellt, in dem entweder eine Warnung oder das eigentliche Terminal angezeigt wird. Beim ersten Aufruf wird eine Warnung angezeigt, die den Benutzer über die Einschränkungen des integrierten Terminals informiert und ihn auffordert, die externe Konsole für volle Funktionalität zu nutzen. Sobald der Benutzer bestätigt, wird die Warnung entfernt und das Terminal geladen.
         # Haupt-Container für den Tab
         self.term_container = ttk.Frame(self.tab_os_terminal)
         self.term_container.pack(fill=tk.BOTH, expand=True)
@@ -2209,7 +2438,7 @@ class NoFuSTX:
         # Zuerst nur den Disclaimer zeigen
         self.show_terminal_disclaimer()
 
-    def show_terminal_disclaimer(self):
+    def show_terminal_disclaimer(self): # <--- Zeigt eine Warnung im OS-Terminal Tab an, die den Benutzer über die Einschränkungen des integrierten Terminals informiert. Es wird ein zentral platzierter Frame erstellt, der eine mehrzeilige Nachricht enthält, die erklärt, dass das Terminal nur für einfache Systemabfragen gedacht ist und keine interaktiven Programme unterstützt. Ein Button ermöglicht es dem Benutzer, die Warnung zu entfernen und das Terminal zu aktivieren.
         # Ein Frame für die Warnung, schön mittig platziert
         self.discl_frame = ttk.Frame(self.term_container)
         self.discl_frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
@@ -2229,7 +2458,7 @@ class NoFuSTX:
                             command=self.activate_terminal)
         start_btn.pack(pady=10)
 
-    def activate_terminal(self):
+    def activate_terminal(self): # <--- Entfernt die Warnung und aktiviert das Terminal im OS-Terminal Tab. Es wird überprüft, ob die Warnung bereits existiert, und falls ja, wird sie entfernt. Anschließend wird das Terminal geladen und konfiguriert, damit der Benutzer sofort mit der Eingabe beginnen kann.
         # 1. Warnung entfernen
         if hasattr(self, 'discl_frame'):
             self.discl_frame.destroy()
@@ -2247,7 +2476,7 @@ class NoFuSTX:
         self.terminal.focus_set()
         
     # --- NEU: Unter-Notebook für den Hilfe-Bereich mit drei Tabs ---
-    def setup_help_and_info_tabs(self):
+    def setup_help_and_info_tabs(self): # <--- Den Hilfe-Tab einrichten, der ein Unter-Notebook mit drei Tabs enthält: Checkliste, Bandpläne/Frequenzen und Handbuch/Hilfe. Jeder Tab wird mit einer entsprechenden Funktion gefüllt, die die Inhalte bereitstellt. Es wird versucht, die Inhalte korrekt anzuzeigen, und Fehler führen zu einer Messagebox, die den Benutzer informiert.
         """Erstellt das Unter-Notebook für den Hilfe-Bereich."""
         self.help_notebook = ttk.Notebook(self.tab_help_main)
         self.help_notebook.pack(expand=1, fill="both", padx=5, pady=5)
@@ -2268,7 +2497,7 @@ class NoFuSTX:
 
     # --- NEU: Inhalte für den "Hilfe"-Tab mit PDF-Auswahl und externem Öffnen ---
 
-    def setup_manual_tab_content(self, parent_frame):
+    def setup_manual_tab_content(self, parent_frame): # <--- Den Inhalt des "Hilfe"-Tabs einrichten, der eine PDF-Auswahl auf der rechten Seite und eine Vorschau mit Seitensteuerung auf der linken Seite enthält. Es wird ein Haupt-Frame erstellt, der horizontal in zwei Bereiche geteilt ist. Der linke Bereich enthält die PDF-Vorschau mit einer Seitensteuerung, während der rechte Bereich die Buttons für die verfügbaren PDFs und einen Button zum externen Öffnen des aktuell ausgewählten Dokuments enthält. Alle Funktionen sind so verknüpft, dass sie die Anzeige aktualisieren und die Navigation ermöglichen.
         
         main_frame = ttk.Frame(parent_frame)
         main_frame.pack(expand=True, fill="both", padx=10, pady=10)
@@ -2317,7 +2546,7 @@ class NoFuSTX:
                                         command=self.open_current_pdf, state="disabled")
         self.btn_open_extern.pack(side=tk.BOTTOM, pady=20, ipadx=10, ipady=5)
 
-    def refresh_pdf_buttons(self):
+    def refresh_pdf_buttons(self): # <--- Aktualisiert die Liste der PDF-Buttons im "Hilfe"-Tab, indem sie den Inhalt des "assets/"-Ordners überprüft und für jede gefundene PDF-Datei einen Button erstellt. Es wird sichergestellt, dass der "assets/"-Ordner existiert, und falls er leer ist, wird eine entsprechende Nachricht angezeigt. Alle Buttons sind so konfiguriert, dass sie die ausgewählte PDF anzeigen und den externen Öffnen-Button aktivieren.
         # Assets Pfad prüfen
         assets_path = os.path.join(os.getcwd(), "assets")
         if not os.path.exists(assets_path):
@@ -2338,14 +2567,14 @@ class NoFuSTX:
                 btn.pack(fill="x", padx=5, pady=3)
 
     
-    def select_pdf(self, path, name):
+    def select_pdf(self, path, name): # <--- PDF auswählen und im Tool anzeigen. Es wird die aktuell ausgewählte PDF gespeichert, der Button zum externen Öffnen aktiviert und die Vorschau der PDF im linken Bereich aktualisiert. Alle Funktionen sind so verknüpft, dass sie die Anzeige korrekt aktualisieren und die Navigation ermöglichen.
         self.current_selected_pdf = path
         self.btn_open_extern.config(state="normal")
         
         # PDF im Tool anzeigen
         self.display_pdf_preview(path)
 
-    def display_pdf_preview(self, path, page_num=0):
+    def display_pdf_preview(self, path, page_num=0): # <--- Vorschau der PDF anzeigen. Es wird versucht, die PDF mit fitz zu öffnen, die angegebene Seite zu rendern und als Bild im linken Bereich anzuzeigen. Die Seitensteuerung wird entsprechend aktualisiert, damit der Benutzer durch die Seiten navigieren kann. Fehler bei der Anzeige führen zu einer Messagebox, die den Benutzer informiert.
         try:
             doc = fitz.open(path) # type: ignore
             self.total_pages = len(doc)
@@ -2369,13 +2598,13 @@ class NoFuSTX:
         except Exception as e:
             messagebox.showerror("Fehler", f"Vorschau fehlgeschlagen: {e}")
 
-    def change_page(self, delta):
+    def change_page(self, delta): # <--- In der PDF Blättern 
         if hasattr(self, 'current_selected_pdf') and self.current_selected_pdf:
             new_page = self.current_page + delta
             if 0 <= new_page < self.total_pages:
                 self.display_pdf_preview(self.current_selected_pdf, new_page)
 
-    def open_current_pdf(self):
+    def open_current_pdf(self): # <--- PDF Öffnen
         if self.current_selected_pdf:
             p = self.current_selected_pdf
             try:
@@ -2389,7 +2618,7 @@ class NoFuSTX:
                 messagebox.showerror("Fehler", f"Konnte PDF nicht öffnen: {e}")
 
     # --- NEU: Inhalte für die Checklisten- und Frequenz-Tabs ---
-    def build_checklist_content(self, parent):
+    def build_checklist_content(self, parent): # <-- Die Checkliste für Equip-Check
         # Ein Rahmen für die Hardware
         frame_hw = ttk.LabelFrame(parent, text=" Hardware & Funk ")
         frame_hw.pack(fill="x", padx=10, pady=5)
@@ -2427,7 +2656,7 @@ class NoFuSTX:
             ttk.Checkbutton(frame_doc, text=item, variable=var).pack(anchor="w", padx=5, pady=2)
 
     # --- Bandpläne und Frequenzübersichten ---
-    def build_frequency_tables(self,parent):
+    def build_frequency_tables(self,parent): # <--- Die Frequenzübersichtstabelle erstellen. Es wird eine Treeview mit den Spalten "Mode", "Frequenz" und "Beschreibung" erstellt, die die Informationen aus der geladenen Frequenzliste anzeigt. Die Spaltenbreiten und Ausrichtungen werden so eingestellt, dass sie gut lesbar sind, und die Daten werden Zeile für Zeile in die Tabelle eingefügt.
         self.freq_tree = ttk.Treeview(parent, columns=("Mode", "Frequenz", "Beschreibung"), show="headings")
         self.freq_tree.heading("Mode", text="Mode")
         self.freq_tree.heading("Frequenz", text="Frequenz",)
@@ -2454,7 +2683,7 @@ class NoFuSTX:
         self.load_and_build_bandplans(self.bandplan_notebook)
 
     # --- NEU: Dynamisches Laden der Bandpläne aus JSON und grafische Darstellung ---
-    def load_and_build_bandplans(self, parent_notebook):
+    def load_and_build_bandplans(self, parent_notebook): # <--- Die Bandpläne aus der JSON Laden.
         # Datei laden (Fehlerbehandlung mit try/except wäre gut)
         band_plan_path = self.band_plan_file
         if not os.path.exists(band_plan_path):
@@ -2481,8 +2710,8 @@ class NoFuSTX:
                                 font=("Arial", 8, "italic"), justify="left")
                 lbl.pack(pady=10, padx=10, anchor="w")
 
-    # --- Bandplan grafik zeichnen ---
-    def draw_band_diagram(self, parent, segments):
+    
+    def draw_band_diagram(self, parent, segments): # <--- Bandplan grafik zeichnen ---
         """
         Zeigt einen farbigen Balken an. 
         'segments' ist eine Liste von (Start, Ende, Farbe, Label)
@@ -2516,7 +2745,7 @@ class NoFuSTX:
 
         canvas.bind("<Configure>", update_width)
 
-    def on_closing(self):
+    def on_closing(self): # <--- Aufräumen beim Schließen der Anwendung. Es wird überprüft, ob der Direkte SDR-Modus aktiv ist, und falls ja, wird er gestoppt. Anschließend wird versucht, die Datenbankverbindung der Karte zu schließen, um sicherzustellen, dass alle Ressourcen freigegeben werden. Schließlich wird eine Nachricht ausgegeben, die den Benutzer darüber informiert, dass NoFuSTX beendet wird.
         
         if hasattr(self, 'map_widget'):
             
@@ -2526,10 +2755,8 @@ class NoFuSTX:
             except:
                 pass
         print("[System] Beende NoFuSTX...")
-        #self.root.destroy()
-        #self.on_close()
 
-    def is_online(self):
+    def is_online(self): # <--- Internet-Test Hat das Programm Internet?
         """Prüft robust, ob eine Internetverbindung besteht."""
         try:
             # Test um zu sehen, ob eine Verbindung zum Internet besteht, via Google
@@ -2538,7 +2765,7 @@ class NoFuSTX:
         except (socket.timeout, socket.error, OSError):
             return False
 
-    def setup_map_view(self):
+    def setup_map_view(self): # <--- Lagekarte einrichten
         """Initialisiert die Karte stabil ohne fehlerhaftes Pre-Caching."""
         
         if tkintermapview is None:
@@ -2617,7 +2844,7 @@ class NoFuSTX:
         # Positionierung: 10 Pixel vom rechten und oberen Rand entfernt
         self.btn_home_map.place(relx=1.0, rely=0.0, x=-10, y=10, anchor="ne")
 
-    def center_to_coordinates(self, lat, lon, zoom):
+    def center_to_coordinates(self, lat, lon, zoom): # <--- Karte nach Koordinaten Zentrieren
         """Hilfsfunktion zum Zentrieren der Karte auf bestimmte Koordinaten."""
         try:
             self.map_widget.set_position(lat, lon)
@@ -2627,13 +2854,13 @@ class NoFuSTX:
             print(f"[Map] Fehler beim Zentrieren: {e}")
         
         
-    def manual_tile_save(self):
+    def manual_tile_save(self): # <--- Manueles speichern der Karten tiles in der offline_tiles.db
         """Startet den Offline-Download in einem Hintergrund-Thread."""
         db_path = os.path.join(base_path, "off_Maps", "offline_tiles.db")
         current_pos = self.map_widget.get_position()
         zoom = int(self.map_widget.zoom)
 
-        def download_thread():
+        def download_thread(): # <--- Kartendownload im Hintergrund damit die UI nicht einfriert.
             from tkintermapview import OfflineLoader
             try:
                 loader = OfflineLoader(path=db_path)
@@ -2659,10 +2886,9 @@ class NoFuSTX:
         # Den Thread starten und "daemon" machen, damit er beim Schließen der App mit stirbt
         bg_thread = threading.Thread(target=download_thread, daemon=True)
         bg_thread.start()
-
+#-------------- Diese Funktionen sind aus Entwicklungsgründen obsolet und werden aus Gründen der Historie beibehalten, bis sicher ist, dass sie nicht mehr benötigt werden. ------------
     def update_aprs_on_map(self):
-        # dieser Button ist obsolet; APRS-Marker werden stattdessen aus den eingehenden Positionsdaten erzeugt
-
+        # Dieser Button ist obsolet; APRS-Marker werden stattdessen aus den eingehenden Positionsdaten erzeugt.
         pass
 
     def update_aprs_on_map_initial(self):
@@ -2672,9 +2898,10 @@ class NoFuSTX:
         """
         # Kein automatischer "Station: ..." Marker mehr
         return
+#------------------------------------------ Ende der Historie funktionen ------------------------------------------------------------------------------------------#
     # ---------- FUNDUS / UNITS ----------
-    def setup_fundus_tab(self):
-        # Vollständiger Fundus mit Status-Umschaltung und Löschen
+    def setup_fundus_tab(self):# <--- Vollständiger Fundus mit Status-Umschaltung und Löschen erstellen
+        
         for w in self.tab_fundus.winfo_children():
             w.destroy()
 
@@ -2714,7 +2941,7 @@ class NoFuSTX:
         ).pack(side="left", padx=5)
 
     # --- Neue Einheit hinzufügen ---
-    def add_unit(self):
+    def add_unit(self): # <--- Einheit hinzufügen und speichern
         """Erstellt eine neue Einheit und speichert sie in der Config."""
         # 1. Ein kleines Eingabefenster öffnen
         dialog = tk.Toplevel(self.root)
@@ -2746,8 +2973,8 @@ class NoFuSTX:
         type_dropdown.pack(padx=20, fill="x")
         type_dropdown.set("NoFuS-SE (Stationäre Einsatzleitung)") # Standardwert
 
-        # --- 3. Speichern-Button mit Funktionalität
-        def save():
+        
+        def save(): # <--- 3. Speichern-Button mit Funktionalität
             name = name_entry.get().strip()
             u_type = type_dropdown.get().strip()
             
@@ -2772,7 +2999,7 @@ class NoFuSTX:
         ttk.Button(dialog, text="Hinzufügen", command=save).pack(pady=15)
 
     # --- Einheitstabelle aktualisieren --
-    def refresh_unit_tree(self):
+    def refresh_unit_tree(self): # <--- Einheitstabelle aktualisieren
         for i in self.tree.get_children():
             self.tree.delete(i)
         for u in self.config.get("UNITS", []):
@@ -2780,7 +3007,7 @@ class NoFuSTX:
             self.tree.insert("", "end", values=(u["name"], u["type"], stat_text))
 
     # --- Status wechseln ---
-    def toggle_unit_status(self):
+    def toggle_unit_status(self): # <--- Status einer Einheit wechseln
         sel = self.tree.selection()
         if sel:
             idx = self.tree.index(sel[0])
@@ -2789,7 +3016,7 @@ class NoFuSTX:
             self.refresh_unit_tree()
 
     # --- Einheit löschen ---
-    def delete_unit(self):
+    def delete_unit(self): # <--- Ausgewählte Einheit löschen
         sel = self.tree.selection()
         if sel and messagebox.askyesno("Löschen", "Einheit entfernen?"):
             idx = self.tree.index(sel[0])
@@ -2798,7 +3025,7 @@ class NoFuSTX:
             self.refresh_unit_tree()
 
     # ---------- IARU MELDUNG ----------
-    def setup_message_tab(self):
+    def setup_message_tab(self): # <--- IARU Meldungstab erstellen
         # IARU-Formular, das sich dynamisch mit dem Hauptfenster mitskaliert
         for w in self.tab_msg.winfo_children():
             w.destroy()
@@ -2952,8 +3179,8 @@ class NoFuSTX:
 
         self.msg_text.bind("<KeyRelease>", self.update_word_count)
 
-    # --- Meldungstext leeren und Formular für neue Meldung vorbereiten ---
-    def clear_iaru_form(self):
+    
+    def clear_iaru_form(self): # <--- Meldungstext leeren und Formular für neue Meldung vorbereiten ---
         """Leert alle Felder des IARU-Formulars für eine neue Meldung."""
 
         # Alle Entry-Felder in der Kopfzeile leeren
@@ -3000,20 +3227,20 @@ class NoFuSTX:
                 self.msg_fields["Zeit (UTC)"].insert(0, now)
         # Die Funktion ruft sich nach 1000ms (1 Sekunde) selbst wieder auf
         self.root.after(1000, self.update_iaru_time)
-    # ---------- Über NoFuS-TX ----------
-    def show_about_window(self):
+    
+    def show_about_window(self): # <--- Über NoFuS-TX Fenster erstellen
         about_win = tk.Toplevel(self.root)
         about_win.title("Über NoFuS-TX")
         about_win.geometry("400x300")
-        tk.Label(about_win, text="NoFuS-TX - Einsatzleitsoftware v1.9.16c").pack(pady=10)
+        tk.Label(about_win, text="NoFuS-TX - Einsatzleitsoftware v1.9.16d").pack(pady=10)
         tk.Label(about_win, text="© 2026 NoFuS-TX DO2ITH").pack(pady=5)
         tk.Label(about_win, text="Alle Rechte vorbehalten.").pack(pady=10)
         tk.Label(about_win, text="E-Mail: info@ithnet.de").pack(pady=10)
         tk.Label(about_win, text="Land: Deutschland").pack(pady=10)
         tk.Label(about_win, text="Webseite: https://www.ithnet.de").pack(pady=10)
         tk.Label(about_win, text="GitHub: https://github.com/jochenkurzschluss/NoFuSTX").pack(pady=10)
-    # ---------- KONFIGURATION ----------
-    def show_config_window(self):
+    
+    def show_config_window(self): # <--- KONFIGURATION FENSTER MIT UNTERSCHIEDLICHEN REITERN FÜR JEDE FUNKTIONALITÄT (MODI, HARDWARE, SPEZIALFELDER, ETC.) ---
         # Hardware- & Modi-Konfiguration inkl. Drucker und SSTV-Spezialfeldern
         win = tk.Toplevel(self.root)
         win.title("Hardware Konfiguration")
@@ -3079,7 +3306,7 @@ class NoFuSTX:
         self.temp_entries["JS8CALL"]["fldigi_modem"] = fldigi_modem
         tk.Label(js8_f, text="CALLSIGN:").pack()
         call_ent = ttk.Entry(js8_f)
-        call_ent.insert(0, str(params.get("callsign", "NOCALL")))
+        call_ent.insert(0, str(self.config.get("USERCALL", {}).get("CALLSINGEN", "NOCALL")))
         call_ent.pack(pady=2)
         self.temp_entries["JS8CALL"]["callsign"] = call_ent
         tk.Label(js8_f, text="SOUNDCARD:").pack()
@@ -3110,7 +3337,7 @@ class NoFuSTX:
         self.temp_entries["VARA"]["fldigi_modem"] = fldigi_modem
         tk.Label(vara_f, text="CALLSIGN:").pack()
         call_ent = ttk.Entry(vara_f)
-        call_ent.insert(0, str(params.get("callsign", "NOCALL")))
+        call_ent.insert(0, str(self.config.get("USERCALL", {}).get("CALLSINGEN", "NOCALL")))
         call_ent.pack(pady=2)
         self.temp_entries["VARA"]["callsign"] = call_ent
         tk.Label(vara_f, text="SOUNDCARD:").pack()
@@ -3156,49 +3383,212 @@ class NoFuSTX:
         self.ax_scroll_f.pack(fill="both", expand=True)
         self.ax_temp_list = []
         self.ax_port_data = [dict(port) for port in self.config.get("MODES", {}).get("AX25_PORTS", [])]
-        def render_ax_ports():
+        def render_ax_ports(): # <--- Dynamische Darstellung der AX.25 Ports mit Bearbeitungs- und Löschfunktion
             for w in self.ax_scroll_f.winfo_children():
                 w.destroy()
             self.ax_temp_list = []
+            
+            # Hilfsfunktion, die beim Umschalten der Combobox anspringt
+            def on_hardware_change(event, index, combobox):
+                new_hardware = combobox.get()
+                # Den neuen Typ im originalen Daten-Array speichern
+                self.ax_port_data[index]["hardware"] = new_hardware
+                # Wichtig: Die Liste einmal komplett neu zeichnen, damit das passende 'case' greift!
+                render_ax_ports()
+
             for i, port in enumerate(self.ax_port_data):
+                # Jeder Port hat auch einen Namen
                 p_frame = ttk.LabelFrame(self.ax_scroll_f, text=f"AX.25 Port #{i+1}")
                 p_frame.pack(fill="x", padx=10, pady=2)
+                
+                # Ist der Port An/Aus?!
                 v = tk.BooleanVar(value=port.get("active", False))
                 tk.Checkbutton(p_frame, text="Aktiv", variable=v).grid(row=0, column=0)
-                dev = ttk.Combobox(p_frame, values=self.options.get("AX25_DEVICES", []), width=8)
-                dev.set(port.get("device", "ax0"))
-                dev.grid(row=0, column=1, padx=5)
-                nick = ttk.Entry(p_frame, width=15)
-                nick.insert(0, port.get("nickname", ""))
-                nick.grid(row=0, column=2, padx=5)
-                call = ttk.Entry(p_frame, width=10)
-                call.insert(0, port.get("call", "NOCALL"))
-                call.grid(row=0, column=3, padx=5)
-                btn_del = ttk.Button(
-                    p_frame,
-                    text="X",
-                    width=3,
-                    command=lambda idx=i: remove_ax_port(idx),
-                )
-                btn_del.grid(row=0, column=4, padx=5)
-                self.ax_temp_list.append(
-                    {"active": v, "device": dev, "nickname": nick, "call": call}
-                )
-        def add_ax_port():
-            self.ax_port_data.append(
-                {"active": False, "device": "ax0", "nickname": "", "call": "NOCALL"}
-            )
+                
+                # Werden über dieses gerät auch APRS Frames empfangen ?
+                aprs = tk.BooleanVar(value=port.get("aprs", False)) # Kleiner Fix: port.get("aprs") statt "active"
+                tk.Checkbutton(p_frame, text="APRS", variable=aprs).grid(row=1, column=0, padx=5, pady=5)
+                
+                # Hardwaretyp Festlegen
+                ttk.Label(p_frame, text="Hardwaretyp:").grid(row=0, column=1, padx=5)
+                dm = ttk.Combobox(p_frame, values=self.options.get("HARDWARE", []), width=9, state="readonly")
+                dm.set(port.get("hardware", "ax"))
+                dm.grid(row=1, column=1, padx=5)
+                
+                # --- HIER IST DIE MAGIE: Das Event an die Combobox binden ---
+                # Wir übergeben den aktuellen Index (i) und die Combobox selbst an die Funktion
+                dm.bind("<<ComboboxSelected>>", lambda event, idx=i, cb=dm: on_hardware_change(event, idx, cb))
+                
+                # --- Abfragen welcher Hardware Typ je port genutzt wird!
+                match port.get("hardware", "ax"):
+                    case "kiss": # <--- Kiss Typ 
+                        # Baud Rate festlegen, geschwindigkeit der Übertragung
+                        ttk.Label(p_frame, text="Baudrate:").grid(row=0, column=2, padx=5)
+                        dev_baud = ttk.Combobox(p_frame, values=self.options.get("BAUD_RATES", []), width=8, state="normal")
+                        dev_baud.set(port.get("BAUD_RATE", "9600"))
+                        dev_baud.grid(row=1, column=2, padx=5)
+                        # Wie ist die Hardware Adresse des Geräts
+                        ttk.Label(p_frame, text="tty/Com Port:").grid(row=0, column=3, padx=5)
+                        dev = ttk.Entry(p_frame, width=10)
+                        dev.insert(0, port.get("device", "/dev/ttyUSB0"))
+                        dev.grid(row=1, column=3, padx=5)
+                        # Alias des Geräts zur Identifikation
+                        ttk.Label(p_frame, text="Alias des Geräts:").grid(row=0, column=4, padx=5)
+                        nick = ttk.Entry(p_frame, width=15)
+                        nick.insert(0, port.get("nickname", ""))
+                        nick.grid(row=1, column=4, padx=5)
+                        # Rufzeichen mögliche abweichung (Trennung CB / AFU)
+                        ttk.Label(p_frame, text="Verwendeter Call:").grid(row=0, column=5, padx=5)
+                        call = ttk.Entry(p_frame, width=10)
+                        if port.get("call", "") == self.config.get("USERCALL", {}).get("CALLSINGEN", "NOCALL") or port.get("call", "") == "NOCALL":
+                            call.insert(0, self.config.get("USERCALL", {}).get("CALLSINGEN", "NOCALL"))
+                        else:
+                            call.insert(0, port.get("call", "NOCALL"))
+                        call.grid(row=1, column=5, padx=5)
+                                                
+                        # Löschen funktion des Ports. Bedeuted durch drücken auf den X Button wird der Ganze Port aus der Konfiguration gelöscht
+                        ttk.Label(p_frame, text="Port Löschen:").grid(row=0, column=6, padx=5)
+                        btn_del = ttk.Button(
+                            p_frame,
+                            text="X",
+                            width=3,
+                            command=lambda idx=i: remove_ax_port(idx),
+                        )
+                        btn_del.grid(row=1, column=6, padx=5)
+                        self.ax_temp_list.append(
+                            {"active": v, "aprs": aprs, "hardware": dm, "BAUD_RATE": dev_baud, "device": dev, "nickname": nick, "call": call}
+                        )
+                        
+                    case "ax": # <--- der Klassische AX.25 Kernel weg (es wird mit axlisten gearbeitet)
+                        ttk.Label(p_frame, text="AX Port bei Unix:").grid(row=0, column=2, padx=5)
+                        dev = ttk.Combobox(p_frame, values=self.options.get("AX25_DEVICES", []), width=8, state="normal")
+                        dev.set(port.get("device", "ax0"))
+                        dev.grid(row=1, column=2, padx=5)
+                        ttk.Label(p_frame, text="Alias des Geräts:").grid(row=0, column=3, padx=5)
+                        nick = ttk.Entry(p_frame, width=15)
+                        nick.insert(0, port.get("nickname", ""))
+                        nick.grid(row=1, column=3, padx=5)
+                        ttk.Label(p_frame, text="Verwendeter Call:").grid(row=0, column=4, padx=5)
+                        call = ttk.Entry(p_frame, width=10)
+                        if port.get("call", "") == self.config.get("USERCALL", {}).get("CALLSINGEN", "NOCALL") or port.get("call", "") == "NOCALL":
+                            call.insert(0, self.config.get("USERCALL", {}).get("CALLSINGEN", "NOCALL"))
+                        else:
+                            call.insert(0, port.get("call", "NOCALL"))
+                        call.grid(row=1, column=4, padx=5)
+                        ttk.Label(p_frame, text="Port Löschen:").grid(row=0, column=5, padx=5)
+                        btn_del = ttk.Button(
+                            p_frame,
+                            text="X",
+                            width=3,
+                            command=lambda idx=i: remove_ax_port(idx),
+                        )
+                        btn_del.grid(row=1, column=5, padx=5)
+                        dev_baud = port.get("BAUD_RATE", "9600")
+                        self.ax_temp_list.append(
+                            {"active": v, "aprs": aprs, "hardware": dm, "BAUD_RATE": dev_baud, "device": dev, "nickname": nick, "call": call}
+                        )
+                        
+                    case "ip": # <--- IP Basierte verbindungen ähnlich wie axip oder ähnliche
+                        # Baud Rate festlegen, geschwindigkeit der Übertragung
+                        ttk.Label(p_frame, text="Baudrate:").grid(row=0, column=2, padx=5)
+                        dev_baud = ttk.Combobox(p_frame, values=self.options.get("BAUD_RATES", []), width=8, state="normal")
+                        dev_baud.set(port.get("BAUD_RATE", "9600"))
+                        dev_baud.grid(row=1, column=2, padx=5)
+                        # Wie ist die Hardware Adresse des Geräts
+                        ttk.Label(p_frame, text="Adresse:").grid(row=0, column=3, padx=5)
+                        dev = ttk.Entry(p_frame, width=10)
+                        dev.insert(0, port.get("device", "192.168.2.1:8081"))
+                        dev.grid(row=1, column=3, padx=5)
+                        # Alias des Geräts zur Identifikation
+                        ttk.Label(p_frame, text="Alias des Geräts:").grid(row=0, column=4, padx=5)
+                        nick = ttk.Entry(p_frame, width=15)
+                        nick.insert(0, port.get("nickname", ""))
+                        nick.grid(row=1, column=4, padx=5)
+                        # Rufzeichen mögliche abweichung (Trennung CB / AFU)
+                        ttk.Label(p_frame, text="Verwendeter Call:").grid(row=0, column=5, padx=5)
+                        call = ttk.Entry(p_frame, width=10)
+                        if port.get("call", "") == self.config.get("USERCALL", {}).get("CALLSINGEN", "NOCALL") or port.get("call", "") == "NOCALL":
+                            call.insert(0, self.config.get("USERCALL", {}).get("CALLSINGEN", "NOCALL"))
+                        else:
+                            call.insert(0, port.get("call", "NOCALL"))
+                        call.grid(row=1, column=5, padx=5)
+                                                
+                        # Löschen funktion des Ports. Bedeuted durch drücken auf den X Button wird der Ganze Port aus der Konfiguration gelöscht
+                        ttk.Label(p_frame, text="Port Löschen:").grid(row=0, column=6, padx=5)
+                        btn_del = ttk.Button(
+                            p_frame,
+                            text="X",
+                            width=3,
+                            command=lambda idx=i: remove_ax_port(idx),
+                        )
+                        btn_del.grid(row=1, column=6, padx=5)
+                        self.ax_temp_list.append(
+                            {"active": v, "aprs": aprs, "hardware": dm, "BAUD_RATE": dev_baud, "device": dev, "nickname": nick, "call": call}
+                        )
+                        
+                    case "soft":
+                        # Baud Rate festlegen, geschwindigkeit der Übertragung
+                        ttk.Label(p_frame, text="Baudrate:").grid(row=0, column=2, padx=5)
+                        dev_baud = ttk.Combobox(p_frame, values=self.options.get("BAUD_RATES", []), width=8, state="normal")
+                        dev_baud.set(port.get("BAUD_RATE", "9600"))
+                        dev_baud.grid(row=1, column=2, padx=5)
+                        # Wie ist die Hardware Adresse des Geräts
+                        ttk.Label(p_frame, text="Software:").grid(row=0, column=3, padx=5)
+                        dev = ttk.Entry(p_frame, width=10)
+                        dev.insert(0, port.get("device", "fldigi"))
+                        dev.grid(row=1, column=3, padx=5)
+                        # Alias des Geräts zur Identifikation
+                        ttk.Label(p_frame, text="Alias des Geräts:").grid(row=0, column=4, padx=5)
+                        nick = ttk.Entry(p_frame, width=15)
+                        nick.insert(0, port.get("nickname", ""))
+                        nick.grid(row=1, column=4, padx=5)
+                        # Rufzeichen mögliche abweichung (Trennung CB / AFU)
+                        ttk.Label(p_frame, text="Verwendeter Call:").grid(row=0, column=5, padx=5)
+                        call = ttk.Entry(p_frame, width=10)
+                        if port.get("call", "") == self.config.get("USERCALL", {}).get("CALLSINGEN", "NOCALL") or port.get("call", "") == "NOCALL":
+                            call.insert(0, self.config.get("USERCALL", {}).get("CALLSINGEN", "NOCALL"))
+                        else:
+                            call.insert(0, port.get("call", "NOCALL"))
+                        call.grid(row=1, column=5, padx=5)
+                                                
+                        # Löschen funktion des Ports. Bedeuted durch drücken auf den X Button wird der Ganze Port aus der Konfiguration gelöscht
+                        ttk.Label(p_frame, text="Port Löschen:").grid(row=0, column=6, padx=5)
+                        btn_del = ttk.Button(
+                            p_frame,
+                            text="X",
+                            width=3,
+                            command=lambda idx=i: remove_ax_port(idx),
+                        )
+                        btn_del.grid(row=1, column=6, padx=5)
+                        self.ax_temp_list.append(
+                            {"active": v, "aprs": aprs, "hardware": dm, "BAUD_RATE": dev_baud, "device": dev, "nickname": nick, "call": call}
+                        )
+                    
+        def add_ax_port(): # <--- AX port hinzufügen (Ergänzt mit allen Standardwerten)
+            # Holen des Standard-Rufzeichens aus der Konfiguration, falls vorhanden
+            default_call = self.config.get("USERCALL", {}).get("CALLSINGEN", "NOCALL")
+            self.ax_port_data.append({
+                "active": False,
+                "aprs": False,
+                "hardware": "ax",                       # Startet standardmäßig als klassischer Unix-AX-Port
+                "device": "ax0",                        # Standard-Device (wird bei Umschalten auf KISS/IP/Soft überschrieben)
+                "BAUD_RATE": "9600",                    # Standard-Geschwindigkeit für KISS, IP und Soft
+                "nickname": "",                         # Leeres Alias Feld
+                "call": default_call                    # Setzt direkt dein Haupt-Rufzeichen als Standard ein
+            })
+            # UI neu zeichnen, damit der neue Port sofort unten auftaucht
             render_ax_ports()
-        def remove_ax_port(idx):
+        def remove_ax_port(idx): # <--- AX port entfernen
             if messagebox.askyesno("Löschen", f"AX.25 Port #{idx+1} entfernen?"):
                 if 0 <= idx < len(self.ax_port_data):
                     del self.ax_port_data[idx]
                 render_ax_ports()
-        render_ax_ports()
+        render_ax_ports() # <--- AUSGEBEN DER AKTUELLEN AX.25 PORTS
         add_button_frame = ttk.Frame(ax_f)
         add_button_frame.pack(fill="x", padx=10, pady=5)
         ttk.Button(add_button_frame, text="Neuen AX.25 Port hinzufügen", command=add_ax_port).pack(side="left")
-        # --- SDR Methode
+        
+        # --- SDR einrichten --- 
         sdr_f = ttk.Frame(nb)
         nb.add(sdr_f, text="SDR")
         self.temp_entries["SDR"] = {}
@@ -3327,17 +3717,34 @@ class NoFuSTX:
             win, text="Konfiguration speichern", command=lambda: self.apply_config(win)
         ).pack(pady=20)
     # --- Konfiguration übernehmen und Fenster schließen ---
-    def apply_config(self, win):
-        # AX.25 Ports übernehmen
-        self.config["MODES"]["AX25_PORTS"] = [
-            {
+    def apply_config(self, win): # <--- Alle Einstellungen aus dem Konfigurationsfenster übernehmen, speichern und Fenster schließen
+        # --- AX.25 Ports sicher übernehmen ---
+        ax25_ports_saved = []
+        for p in self.ax_temp_list:
+            
+            # Erstmal prüfen, ob die Baudrate ein Widget (.get()) oder ein fester Wert ist
+            baud_value = p["BAUD_RATE"]
+            if hasattr(baud_value, "get"):
+                baud_value = baud_value.get()  # Es ist eine Combobox (kiss, ip, soft)
+            else:
+                baud_value = str(baud_value)   # Es ist der feste Wert aus dem "ax"-Case
+
+            # Die Basis-Daten, die JEDER Hardware-Typ hat
+            port_dict = {
                 "active": p["active"].get(),
+                "aprs": p["aprs"].get(),
+                "hardware": p["hardware"].get(),
+                "BAUD_RATE": baud_value,       # Der sauber ermittelte Wert
                 "device": p["device"].get(),
                 "nickname": p["nickname"].get(),
                 "call": p["call"].get(),
             }
-            for p in self.ax_temp_list
-        ]
+                
+            ax25_ports_saved.append(port_dict)
+
+        # In die Konfiguration schreiben
+        self.config["MODES"]["AX25_PORTS"] = ax25_ports_saved
+
         # Drucker übernehmen
         self.config["PRINTER"] = {
             "name": self.prn_name.get(),
@@ -3366,12 +3773,13 @@ class NoFuSTX:
                     if k == "active":
                         continue
                     self.config["MODES"][m][k] = widget.get()
-        self.save_settings()
-        self.setup_digimode_terminals()
-        self.setup_fundus_tab()
-        win.destroy()
+                    
+        self.save_settings() # <--- Speichernfunktion
+        self.setup_digimode_terminals() # <--- Terminal-Fenster neu aufbauen, da sich die aktiven Modi geändert haben könnten
+        self.setup_fundus_tab() # <--- Fundus-Tab neu aufbauen, da sich die Modi und damit die verfügbaren Meldungen geändert haben könnten
+        win.destroy() # <--- Schließen des Kofig Fensters
     # ---------- DIGIMODES ----------
-    def setup_digimode_terminals(self):
+    def setup_digimode_terminals(self): # <--- Terminal-Fenster für die aktiven Digimodes aufbauen (AX.25 Ports, LoRa Mesh, etc.)
         for w in self.tab_digi.winfo_children():
             w.destroy()
         # Referenzen auf die Terminal-Fenster für spätere Nutzung (z.B. Senden)
@@ -3447,7 +3855,7 @@ class NoFuSTX:
                 self.digi_terminals[mode]["sender"] = send
         # Weitere Modi als einfache Terminals
         for mode, data in self.config["MODES"].items():
-            if mode not in ("AX25_PORTS", "APRS_IS", "LORA_MESH") and data.get("active"):
+            if mode not in ("AX25_PORTS", "APRS_IS", "LORA_MESH", "LORA_APRS") and data.get("active"):
                 f = ttk.Frame(nb)
                 nb.add(f, text=mode)
                 # Container für die beiden Bereiche (RX Text und Senden)
@@ -3469,32 +3877,33 @@ class NoFuSTX:
                 t_send_entry._digimode_mode = mode # type: ignore - Speichere den Modus direkt im Widget für den Send-Handler
                 self.digi_terminals[mode] = {"receive": t, "sender": t_send_entry}
     # ---------- LOG ----------
-    def get_utc_now(self):
+    def get_utc_now(self): # <--- Hole den UTC Timestamp
         """Gibt die aktuelle UTC-Zeit zurück, kompatibel für ältere und neuere Python-Versionen."""
         try:
             return datetime.datetime.now(datetime.timezone.utc)
         except AttributeError:
             return datetime.datetime.utcnow()
-    def utc_iso_timestamp(self, dt=None):
+    def utc_iso_timestamp(self, dt=None): # <--- Formatiere einen UTC Timestamp im ISO-Format (z.B. für IARU-Meldungen)
         dt = dt or self.get_utc_now()
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-    def utc_time_str(self, dt=None):
+    def utc_time_str(self, dt=None): # <--- Formatiere einen UTC Timestamp als Zeitstring (z.B. für die Anzeige in der Historie)
         dt = dt or self.get_utc_now()
         return dt.strftime("%H:%M:%S")
-    def utc_date_str(self, dt=None):
+    def utc_date_str(self, dt=None): # <--- Formatiere einen UTC Timestamp als Datumstring (z.B. für die Anzeige in der Historie)
         dt = dt or self.get_utc_now()
         return dt.strftime("%d.%m.%Y")
-    def formatted_utc_timestamp(self, timestamp=None):
+    def formatted_utc_timestamp(self, timestamp=None): # <--- Formatiere einen UTC Timestamp als Zeitstring, mit Fehlerbehandlung (z.B. für die Anzeige in der Historie)
+        dt=None
         try:
             if timestamp is not None:
                 dt = datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc)
-            return dt.strftime("%H:%M:%S")
+                #print(f"[DEBUG] die Variable sieht so aus: {dt}")
+            return dt.strftime("%H:%M:%S") # type: ignore
         except Exception:
             return None
-
-    def ensure_msg_folder(self):
+    def ensure_msg_folder(self): # <--- Stelle sicher, dass der Ordner für die IARU-Meldungen existiert
         os.makedirs(self.msg_folder, exist_ok=True)
-    def load_message_counter(self):
+    def load_message_counter(self): # <--- Lade den Zähler für die IARU-Meldungen, basierend auf der Konfiguration und den vorhandenen Meldungsdateien
         self.ensure_msg_folder()
         counter = 1
         config_counter = self.config.get("IARU", {}).get("next_message_number")
@@ -3509,7 +3918,7 @@ class NoFuSTX:
         else:
             self.config["IARU"]["next_message_number"] = counter
         return counter
-    def compose_iaru_text(self, header_lines, prio, body):
+    def compose_iaru_text(self, header_lines, prio, body): # <--- Erstelle den Text für die IARU-Meldung basierend auf den Header-Informationen, der Wichtigkeit und dem Meldungstext
         text_trenner = "\n\n#NOFUSTX#Meldungstext#\n\n\n"
         return (
             text_trenner
@@ -3518,9 +3927,9 @@ class NoFuSTX:
             + f"\nWICHTIGKEIT: {prio}\n\n{body}\n"
             + f"\n---Ende der Meldung---\n\n"
         )
-    def sanitize_filename_part(self, part):
+    def sanitize_filename_part(self, part): # <--- Bereinige einen Teil des Dateinamens, um ungültige Zeichen zu entfernen (z.B. für die Priorität oder Richtung in der IARU-Meldungsdatei)
         return re.sub(r"[^A-Za-z0-9_-]", "_", str(part).strip().replace(" ", "_"))
-    def get_message_filename(self, nr, prio, direction, timestamp):
+    def get_message_filename(self, nr, prio, direction, timestamp): # <--- Erstelle den Dateinamen für eine IARU-Meldung
         prio_key = self.sanitize_filename_part(prio)
         direction_key = self.sanitize_filename_part(direction)
         filename = f"{timestamp}_MSG{nr}_prio-{prio_key}_{direction_key}.txt"
@@ -3531,10 +3940,10 @@ class NoFuSTX:
             path = os.path.join(self.msg_folder, filename)
             suffix += 1
         return path
-    def make_message_summary(self, body):
+    def make_message_summary(self, body): # <--- Erstelle eine kurze Zusammenfassung des Meldungstextes für die Anzeige in der Historie (z.B. die ersten 120 Zeichen, bereinigt von Zeilenumbrüchen und überflüssigen Leerzeichen)
         summary = " ".join(str(body).split())
         return summary[:120]
-    def add_message_history_entry(self, direction, nr, prio, summary, file_path):
+    def add_message_history_entry(self, direction, nr, prio, summary, file_path): # <--- Füge einen Eintrag zur Historie der IARU-Meldungen hinzu, basierend auf den Informationen der Meldung und dem Dateipfad
         try:
             #time_str = datetime.datetime.utcfromtimestamp(os.path.getmtime(file_path)).strftime("%H:%M:%S")
             time_str = self.formatted_utc_timestamp(os.path.getmtime(file_path))
@@ -3549,7 +3958,7 @@ class NoFuSTX:
                 values=(time_str, nr, prio, direction, summary),
             )
             self.msg_history_entries[item] = file_path
-    def parse_iaru_message_file(self, file_path):
+    def parse_iaru_message_file(self, file_path): # <--- Lese eine IARU-Meldungsdatei ein und extrahiere die Informationen für die Anzeige und Bearbeitung (z.B. Header, Meldungstext, Richtung, Zusammenfassung)
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 text = f.read()
@@ -3581,7 +3990,7 @@ class NoFuSTX:
         else:
             data["direction"] = "Lokal"
         return data
-    def load_message_history(self):
+    def load_message_history(self): # <--- Lade die Historie der IARU-Meldungen aus den gespeicherten Dateien und zeige sie in der Historie an (z.B. mit Zeit, Nummer, Wichtigkeit, Richtung und Zusammenfassung)
         if not hasattr(self, "msg_history_tree"):
             return
         self.msg_history_tree.delete(*self.msg_history_tree.get_children())
@@ -3596,7 +4005,7 @@ class NoFuSTX:
             self.add_message_history_entry(
                 parsed["direction"], nr, prio, parsed["summary"], file_path
             )
-    def load_iaru_message_from_file(self, file_path):
+    def load_iaru_message_from_file(self, file_path): # <--- Lade eine IARU-Meldung aus einer Datei und fülle die entsprechenden Felder im Formular für die Anzeige und Bearbeitung (z.B. Header-Felder, Meldungstext, Wichtigkeit)
         parsed = self.parse_iaru_message_file(file_path)
         if not parsed:
             return
@@ -3612,21 +4021,21 @@ class NoFuSTX:
         self.msg_text.delete("1.0", tk.END)
         self.msg_text.insert("1.0", parsed["body"])
         self.update_word_count()
-    def on_msg_history_double_click(self, event):
+    def on_msg_history_double_click(self, event): # <--- Event-Handler für Doppelklick auf einen Eintrag in der Historie, um die entsprechende IARU-Meldung zu laden und anzuzeigen
         selection = self.msg_history_tree.selection()
         if not selection:
             return
         file_path = self.msg_history_entries.get(selection[0])
         if file_path:
             self.load_iaru_message_from_file(file_path)
-    def increment_message_counter(self):
+    def increment_message_counter(self): # <--- Erhöhe den Zähler für IARU-Meldungen
         self.counter_number_msg += 1
         if "IARU" not in self.config:
             self.config["IARU"] = {"next_message_number": self.counter_number_msg}
         else:
             self.config["IARU"]["next_message_number"] = self.counter_number_msg
         self.save_settings()
-    def save_iaru_message_file(self, nr, prio, direction, full_text, summary):
+    def save_iaru_message_file(self, nr, prio, direction, full_text, summary): # <--- Speichere den Text einer IARU-Meldung in einer Datei, basierend auf der Nummer, Wichtigkeit, Richtung und einem Zeitstempel, und füge einen Eintrag zur Historie hinzu
         self.ensure_msg_folder()
         ts = self.get_utc_now().strftime("%Y%m%d_%H%M%S")
         file_path = self.get_message_filename(nr, prio, direction, ts)
@@ -3638,7 +4047,7 @@ class NoFuSTX:
             pass
         self.add_message_history_entry(direction, nr, prio, summary, file_path)
         return file_path
-    def process_iaru_message(self, direction, header_lines, prio, body, nr=None):
+    def process_iaru_message(self, direction, header_lines, prio, body, nr=None): # <--- Verarbeite eine IARU-Meldung, indem der vollständige Text erstellt, eine Datei gespeichert und die Historie aktualisiert wird (z.B. für empfangene oder lokal geloggte Meldungen)
         full_text = self.compose_iaru_text(header_lines, prio, body)
         if nr is None:
             nr = self.msg_fields["Nummer"].get() if "Nummer" in self.msg_fields else str(self.counter_number_msg)
@@ -3646,7 +4055,7 @@ class NoFuSTX:
         file_path = self.save_iaru_message_file(nr, prio, direction, full_text, summary)
         self.increment_message_counter()
         return full_text, file_path
-    def receive_iaru_msg(self, source, header_lines, prio, body, nr=None):
+    def receive_iaru_msg(self, source, header_lines, prio, body, nr=None): # <--- Verarbeite eine empfangene IARU-Meldung, indem der vollständige Text erstellt, eine Datei gespeichert und die Historie aktualisiert wird, und zusätzlich einen Eintrag im Einsatz-Log erstellt wird
         full_text, file_path = self.process_iaru_message("Empfangen", header_lines, prio, body, nr=nr)
         time_str = self.utc_time_str()
         nr_display = nr if nr is not None else "?"
@@ -3656,7 +4065,7 @@ class NoFuSTX:
         self.log_list.insert(0, log_line)
         self.write_session_log(f"[{self.utc_iso_timestamp()}] {log_line}")
         return full_text, file_path
-    def log_iaru_msg(self):
+    def log_iaru_msg(self): # <--- Verarbeite eine lokal geloggte IARU-Meldung, indem der vollständige Text erstellt, eine Datei gespeichert und die Historie aktualisiert wird, und zusätzlich einen Eintrag im Einsatz-Log erstellt wird
         header_keys = ["Nummer", "Quelle / Station", "Wort-Zaehler", "Herkunft", "Zeit (UTC)", "Datum"]
         header_lines = []
         for key in header_keys:
@@ -3673,7 +4082,7 @@ class NoFuSTX:
         self.clear_iaru_form()
         messagebox.showinfo("NoFuS-TX", "Meldung gespeichert.")
     # --- Meldung senden (in Terminal und/oder nur Loggen) ---
-    def send_iaru_msg(self):
+    def send_iaru_msg(self): # <--- Verarbeite eine zu sendende IARU-Meldung, indem der vollständige Text erstellt, eine Datei gespeichert und die Historie aktualisiert wird, zusätzlich ein Eintrag im Einsatz-Log erstellt wird, und optional die Meldung über einen Digimode gesendet und/oder gedruckt wird
         # IARU-Meldung als Text zusammensetzen
         header_keys = ["Nummer", "Quelle / Station", "Wort-Zaehler", "Herkunft", "Zeit (UTC)", "Datum"]
         header_lines = []
@@ -3688,9 +4097,9 @@ class NoFuSTX:
         full_text, file_path = self.process_iaru_message(direction, header_lines, prio, body)
         '''MESH-TX'''
         if mode == "LORA_MESH" and self.mesh_connected:
-            self.iaru_mesh_send_msg(full_text)
+            self.iaru_mesh_send_msg(full_text) # <--- Hier wird die Funktion aufgerufen, die die Meldung über das LoRa Mesh sendet (wenn dieser Modus gewählt ist und die Hardware verbunden ist)
         if mode and mode != "Nur Log" and mode != "LORA_MESH":
-            self.transmit_digimode_text(mode, full_text)
+            self.transmit_digimode_text(mode, full_text) # <--- Hier wird die Funktion aufgerufen, die die Meldung über den gewählten Digimode sendet (wenn dieser Modus gewählt ist und nicht "Nur Log" oder "LORA_MESH" ist)
             term = getattr(self, "digi_terminals", {}).get(mode)
             if isinstance(term, dict):
                 monitor = term.get("monitor")
@@ -3740,16 +4149,16 @@ class NoFuSTX:
         self.clear_iaru_form()
         messagebox.showinfo("NoFuS-TX", "Meldung gesendet und protokolliert.")
     # --- Log-Tab einrichten ---
-    def setup_log_tab(self):
+    def setup_log_tab(self): # <--- Das Einsatzlog-Tab einrichten
         self.log_list = tk.Listbox(self.tab_log, font=("Courier", 10), bg="#FFFFFF", fg="#000000")
         self.log_list.pack(expand=1, fill="both", padx=10, pady=10)
     # ---------- UHR ----------
-    def update_clock(self):
+    def update_clock(self): # <--- Aktualisiere die Uhrzeit-Anzeige im Hauptfenster, basierend auf der aktuellen UTC-Zeit, und plane die nächste Aktualisierung in 1 Sekunde
         now_utc = self.get_utc_now()
         self.time_label.config(text=now_utc.strftime("%d.%m.%Y - %H:%M:%S UTC"))
         self.root.after(1000, self.update_clock)
     # ---------- Aktueller Map Zoom ----------
-    def get_current_map_zoom(self):
+    def get_current_map_zoom(self): # <--- Holt die aktuelle Zoomstufe und zeigt den Aktuellen Tab an, damit man sofort sieht, ob die Lagekarte aktiv ist und welchen Zoom sie hat (wenn sie aktiv ist), oder welcher andere Tab aktiv ist (wenn nicht)
         current_tab_text = self.tabs.tab(self.tabs.select(), "text") # type: ignore
         if current_tab_text == "Lagekarte":
             if hasattr(self, "map_widget") and self.map_widget:
@@ -3760,7 +4169,7 @@ class NoFuSTX:
             self.zoom_label.config(text=f"{current_tab_text}")
         self.cpu_usage()
         self.root.after(2000, self.get_current_map_zoom)  # Alle 2 Sekunden aktualisieren
-    def cpu_usage(self):
+    def cpu_usage(self): # <--- Aktualisiert die Anzeige der CPU- und RAM-Auslastung, wenn psutil verfügbar ist, und plant die nächste Aktualisierung in 2 Sekunden
         mem = psutil.virtual_memory() # type: ignore
         if psutil is not None:
             usage = psutil.cpu_percent(interval=1)
@@ -3768,30 +4177,82 @@ class NoFuSTX:
         else:
             self.lbl_cpu.config(text="CPU: N/A")
     # --- Meshtastic integration --- #
-    def init_meshtastic_hardware(self):
+    def init_meshtastic_hardware(self): # <--- Initialisiert das Meshtastic-Hardware-Interface mit echtem PIN-Support
         try:
-            # Versuche die USB/Seriell-Verbindung aufzubauen
-            dev = self.config.get("MODES", {}).get("LORA_MESH", "").get("ConnectionMode", "")
+            # Konfigurations-Werte laden
+            mesh_conf = self.config.get("MODES", {}).get("LORA_MESH", {})
+            dev = mesh_conf.get("ConnectionMode", "")
+            config_pin = mesh_conf.get("ADMIN", "") # Deine "1234" aus der Config
+            
             print(f"[Mesh] Gerätepfad {dev}")
+            
             if meshtastic_serial_interface is None:
                 raise ImportError("Meshtastic-Serial-Interface nicht verfügbar")
+
+            # 1. Ganz normal das serielle Interface öffnen (ohne falsche Parameter!)
             self.interface = meshtastic_serial_interface.SerialInterface(devPath=dev)
             mesh_iface = cast(Any, self.interface)
+
+            # 2. Wenn eine PIN in der Config hinterlegt ist, authentifizieren wir uns jetzt
+            if config_pin:
+                print(f"[Mesh] 🔐 Sende Admin-Authentifizierung aus Config...")
+                try:
+                    # Bei neueren API-Versionen wird die Admin-PIN direkt an den lokalen Node-Key übergeben,
+                    # damit nachfolgende Befehle wie getMyNodeInfo() autorisiert sind.
+                    # (Je nach genauer API-Version setzt man das direkt im inneren Radio-Interface)
+                    if hasattr(mesh_iface, "localNode") and mesh_iface.localNode:
+                        # Setzt die PIN für die laufende Session
+                        mesh_iface.localNode.set_admin_pin(str(config_pin))
+                except Exception as pin_err:
+                    print(f"[Mesh] ⚠️ Konnte Admin-PIN nicht setzen (Evtl. alte API-Version?): {pin_err}")
+
+            # 3. Jetzt holen wir die Node-Infos (das schlägt ohne PIN bei neuer Firmware fehl)
             d = mesh_iface.getMyNodeInfo()
+            
             # Wenn erfolgreich: Flags setzen und Funktionen anstoßen
             self.mesh_connected = True
             print(f"[Mesh] ✅ Gerät erfolgreich initialisiert.")
+            
             # Deine Start-Kette für den Mesh-Betrieb
             if pub is not None:
                 pub.subscribe(self.on_receive, "meshtastic.receive")
+            # Hier Holen wir die Bestehenden Kanäle im Node
+            try:
+                self.mesh_kanal_name = self.interface.localNode.channels
+                print(f"[Mesh] Kanäle erfolgreich gelesen.")
+                
+                # --- NEU: Wir bauen ein lesbares Wörterbuch für die App ---
+                self.mesh_channels_dict = {}
+                
+                for ch in self.mesh_kanal_name:
+                    # Prüfen, ob der Kanal überhaupt konfiguriert ist (Rolle ist nicht DISABLED)
+                    if ch.role != 0:  # 0 steht in Protobuf oft für DISABLED / UNSET
+                        ch_index = ch.index
+                        
+                        # Den Namen herausholen. Wenn es der PRIMARY ist und kein Name 
+                        # gesetzt wurde, heißt er standardmäßig "PRIMARY"
+                        ch_name = ch.settings.name
+                        if not ch_name:
+                            ch_name = "PRIMARY" if ch.role == 1 else f"Ch {ch_index}"
+                        
+                        # In unserem Wörterbuch speichern (z.B. {1: "NoFuS"})
+                        self.mesh_channels_dict[ch_index] = ch_name
+                
+                print(f"[Mesh] 🗺️ Erkannte Kanal-Zuweisung: {self.mesh_channels_dict}")
+                
+            except Exception as f:
+                print(f"[Mesh] Fehler beim Kanal Holen\n {f} \n")
+                self.mesh_channels_dict = {0: "PRIMARY"} # Fallback, damit es nicht kracht
+
             self.meshtastic_test()
             self.start_monitor_thread()            
+            
         except Exception as e:
-            # Falls kein T-Beam steckt oder der Port blockiert ist
             self.mesh_connected = False
             self.interface = None
-            print(f"[Mesh] ❌ Hardware nicht gefunden oder blockiert!")
-            # Direktes Feedback in deinen Monitor (Mülleimer/Log-Bereich)
+            print(f"[Mesh] ❌ Hardware nicht gefunden, blockiert oder Authentifizierung fehlgeschlagen!")
+            
+            # Direktes Feedback in deinen Monitor
             if "LORA_MESH" in self.digi_terminals:
                 self.digi_terminals["LORA_MESH"]["monitor"].insert(
                     "end", 
@@ -3801,7 +4262,7 @@ class NoFuSTX:
                     f"Fehler: {e}\n\n"
                 )
                 self.digi_terminals["LORA_MESH"]["monitor"].see("end")
-    def _start_fldigi_client(self):
+    def _start_fldigi_client(self): # <--- Interne Funktion, um den FLDIGI/pyfldigi-Client zu starten, falls die Bibliothek verfügbar ist, und eine Referenz darauf zurückzugeben, oder None, wenn es nicht funktioniert
         """Initialisiert FLDIGI/pyfldigi bei Bedarf und liefert einen Client zurück."""
         if pyfldigi is None:
             return None
@@ -3818,7 +4279,7 @@ class NoFuSTX:
         except Exception as exc:
             print(f"[FLDIGI] Initialisierung fehlgeschlagen: {exc}")
             return None
-    def transmit_digimode_text(self, mode, text):
+    def transmit_digimode_text(self, mode, text): # <--- Sendet den gegebenen Text über FLDIGI, wenn der Modus aktiviert ist und die FLDIGI-Integration funktioniert, und gibt True zurück, wenn es gesendet wurde, oder False, wenn es nicht gesendet werden konnte (z.B. weil der Modus nicht aktiviert ist oder FLDIGI nicht verfügbar ist)
         """Sendet IARU-Text über FLDIGI, sofern im Modus aktiviert."""
         if not text:
             return False
@@ -3852,7 +4313,7 @@ class NoFuSTX:
         except Exception as exc:
             print(f"[DIGI] {mode} TX fehlgeschlagen: {exc}")
         return False
-    def insert_with_limit(self, widget, text_to_insert, max_lines=100):
+    def insert_with_limit(self, widget, text_to_insert, max_lines=100): # <--- Limitiert die Anzahl der Zeilen in einem Text-Widget, indem neue Zeilen unten eingefügt und alte Zeilen oben gelöscht werden, wenn das Limit überschritten wird
         """Fügt Text ein und wirft oben Zeilen raus, wenn es zu voll wird."""
         # 1. Text ganz normal unten rein und scrollen
         widget.insert("end", text_to_insert)
@@ -3863,7 +4324,7 @@ class NoFuSTX:
         if total_lines > max_lines:
             lines_to_delete = total_lines - max_lines
             widget.delete("1.0", f"{lines_to_delete + 1}.0")
-    def meshtastic_test(self):
+    def meshtastic_test(self): # <--- Testet Mesh und holt wenn vorhanden Informationen aus dem und über das device
         try:
             mesh_iface = cast(Any, self.interface)
             data = mesh_iface.getMyNodeInfo()
@@ -3892,7 +4353,7 @@ class NoFuSTX:
         except Exception as e:
             print(f"Fehler bei Hardware Zugriff: {e}")
             return None
-    def mesh_my_heard(self):
+    def mesh_my_heard(self): # <--- Holt die Liste der zuletzt gehörten Mesh-Teilnehmer und zeigt sie im Monitor an, inklusive Name, ID, letztem Kontakt und SNR, und aktualisiert diese Liste alle 3 Minuten
         try:
             # Das Dictionary mit allen bekannten Teilnehmern
             mesh_iface = cast(Any, self.interface)
@@ -3918,9 +4379,7 @@ class NoFuSTX:
             self.root.after(180000, self.mesh_my_heard) # Alle 3 Minuten aktualisieren
         except Exception as e:
             print(f"Fehler: {e}")
-    # 1. Eine normale Funktion in deiner Klasse
-    def on_receive(self, packet, interface):
-        # print(f"Paket empfangen:\n {packet} \n################\n")
+    def on_receive(self, packet, interface): # <--- MESH Wird aufgerufen, wenn ein neues Paket im Mesh ankommt, und verarbeitet es je nach Inhalt (Textnachricht, Position, Telemetrie), zeigt es im Monitor an, übersetzt die Sender-ID in einen Namen, wenn möglich, und aktualisiert die APRS-Position, wenn es eine Positionsmeldung ist
         sender_id = packet.get('fromId')
         user_info = {}
         # --- SENDER-ID IN NAME ÜBERSETZEN ---
@@ -3943,11 +4402,14 @@ class NoFuSTX:
         #self.write_session_log(f"[{self.utc_iso_timestamp()}] Empfangenes Paket: {packet}")
         self.insert_with_limit(self.digi_terminals["LORA_MESH"]["monitor"], packet, max_lines=150)
         if portnum == "TEXT_MESSAGE_APP":
+            kanal_nummer = packet.get("channel", 0)
+            kanal_name = self.mesh_channels_dict.get(kanal_nummer, f"Kanal {kanal_nummer}")
+            # Entwicklungs Debug print(f"[Mesh] Kanalname = {kanal_name}")
             msg = decoded.get('text')
             # Hier der schöne Insert mit Namen statt kryptischer ID
             self.digi_terminals["LORA_MESH"]["receive"].insert(
                 "end", 
-                f"[{self.utc_time_str()}] {sender_name}:\n{msg}\n"
+                f"[{self.utc_time_str()}] {sender_name} | Kanal: {kanal_name}:\n{msg}\n"
             )
             self.digi_terminals["LORA_MESH"]["receive"].see("end")
         # Wenn es eine Position ist:
@@ -3978,7 +4440,7 @@ class NoFuSTX:
         # Wenn es Telemetrie ist (Batterie etc.):
         elif portnum == "TELEMETRY_APP":
             tele = decoded.get('telemetry', {})
-    def receive_loop(self):
+    def receive_loop(self): # <--- Mesch empfangs schleife die in einem eigenen Thread läuft, um kontinuierlich Pakete zu empfangen und die on_receive-Funktion aufzurufen, ohne die GUI zu blockieren, und Fehler im Empfangsprozess abzufangen und im Monitor anzuzeigen
         mesh_iface = cast(Any, self.interface)
         if not mesh_iface or not hasattr(mesh_iface, "stream_packets"):
             return
@@ -3987,7 +4449,7 @@ class NoFuSTX:
                 self.on_receive(packet, self.interface)
         except Exception as e:
             print(f"[Mesh] Fehler im Empfangs-Loop: {e}")
-    def start_monitor_thread(self):
+    def start_monitor_thread(self): # <--- Startet den Monitorthread für Mesh
         if not self.mesh_connected or not self.interface:
             return
         if not hasattr(self.interface, "stream_packets"):
@@ -3995,7 +4457,7 @@ class NoFuSTX:
             return
         t = threading.Thread(target=self.receive_loop, daemon=True)
         t.start()
-    def on_digimode_send_enter(self, event):
+    def on_digimode_send_enter(self, event): # <--- Wenn Enter gedrückt wird in einem Digimode Sende den Text
         """Sendet Text direkt aus einem Digimode-Entry-Feld."""
         widget = event.widget
         mode = getattr(widget, "_digimode_mode", None) or ""
@@ -4011,7 +4473,7 @@ class NoFuSTX:
                 receive.insert("end", f"[{self.utc_time_str()}] {self.config.get('USERCALL',{}).get('CALLSINGEN', 'N0CALL')} via {mode}:\n{msg_text}\n")
                 receive.see("end")
         widget.delete(0, "end")
-    def on_mesh_send_enter(self, event):
+    def on_mesh_send_enter(self, event): # <--- Wird aufgerufen, wenn im Entry-Feld ENTER gedrückt wird
         """Wird aufgerufen, wenn im Entry-Feld ENTER gedrückt wird."""
         if not self.mesh_connected or not self.interface:
             print("[Mesh] Senden nicht möglich: Keine Hardware verbunden.")
@@ -4045,7 +4507,7 @@ class NoFuSTX:
                     f"[{self.utc_time_str()}] ❌ Sende-Fehler: {e}\n"
                 )
                 self.digi_terminals["LORA_MESH"]["monitor"].see("end")
-    def iaru_mesh_send_msg(self, msg):
+    def iaru_mesh_send_msg(self, msg): # <--- wird aufgerufen wenn via Mesh eine IARU mitteilung gesendet werden soll
         if not self.mesh_connected or not self.interface:
             print("[Mesh] Senden nicht möglich: Keine Hardware verbunden.")
             return
@@ -4060,8 +4522,8 @@ class NoFuSTX:
             total_chunks = len(chunks)
             # Ein einfaches Flag, das signalisiert, ob das Board bereit für das nächste Paket ist
             self.mesh_ready_for_next = False
-            # Lokale Hilfsfunktion für das ACK-Event (Genauso wie in deiner Version!)
-            def on_ack_received(packet, interface):
+            # Lokale Hilfsfunktion für das ACK-Event 
+            def on_ack_received(packet, interface): # <--- prüfe ob das erste Paket gesendet ist
                 routing = packet.get("decoded", {}).get("routing", {})
                 error_reason = routing.get("errorReason", "NONE")
                 if error_reason == "NONE":
@@ -4117,7 +4579,7 @@ class NoFuSTX:
                 "end", f"[{self.utc_time_str()}] ❌ Sende-Fehler: {e}\n"
             )
             self.digi_terminals["LORA_MESH"]["monitor"].see("end")
-    def check_equip(self):
+    def check_equip(self): # <--- Zeigt eine Checkliste mit der wichtigsten Ausrüstung an
         equip_check_quest = messagebox.askyesno(
             title = "Ablageplatz und Equipment",
             message="Soll die Checkliste angezeigt werden?\nSie können Diese dann abarbeiten"
@@ -4130,7 +4592,7 @@ class NoFuSTX:
                 messagebox.showinfo("Hilfe", "Der Hilfebereich ist derzeit nicht verfügbar.")
         else:
             pass
-    def mesh_gps_pos(self):
+    def mesh_gps_pos(self): # <--- Aktualisiert beim Programmstart einmalig die HOME-Position aus Mesh-GPS, sofern die Konfiguration das erlaubt und ein gültiger GPS-Stand verfügbar ist
         """
         Aktualisiert beim Programmstart einmalig die HOME-Position aus Mesh-GPS,
         sofern die Konfiguration das erlaubt und ein gültiger GPS-Stand verfügbar ist.
@@ -4165,9 +4627,9 @@ class NoFuSTX:
         except Exception:
             self.mesh_home_auto_updated = True
             return
-    def simple_rx(self, event):
+    def simple_rx(self, event): # <--- Wird aufgerufen, wenn der RX-Modus gewechselt wird, und startet die entsprechende RX-Funktion oder stoppt sie, je nach Auswahl
         mode = self.rx_combo.get()
-        def is_fldigi_aktive(m):
+        def is_fldigi_aktive(m): # <--- Hillfsfunktion, um zu prüfen, ob der ausgewählte Modus die FLDIGI-Integration aktiviert hat, basierend auf der Konfiguration
             cfg_raw = self.config.get("MODES", {}).get(m, {})
             cfg = cfg_raw.get("use_fldigi", False)
             return cfg
@@ -4209,7 +4671,7 @@ class NoFuSTX:
                         self.rx_combo.set("Kein RX")
                 except Exception:
                     self.rx_combo.set("")
-    def clear_vars_fldigi(self):
+    def clear_vars_fldigi(self): # <--- Setzt alle Variablen zurück, die mit fldigi zu tun haben.
         """Setzt alle Variablen zurück, die mit fldigi zu tun haben."""
         # Polling-Timer abbrechen wenn aktiv
         if self.fldigi_after_id is not None:
@@ -4219,7 +4681,7 @@ class NoFuSTX:
                 pass
             self.fldigi_after_id = None
         self.fldigi_polling_active = False
-    def start_fldigi_rx_loop(self):
+    def start_fldigi_rx_loop(self): # <--- Startet die regelmäßige Abfrage von fldigi.
         """Startet die regelmäßige Abfrage von fldigi.
         Wird einmalig am Ende von setup_ui() aufgerufen."""
         if pyfldigi is None:  # Prüfen, ob die Library überhaupt geladen ist
@@ -4247,7 +4709,7 @@ class NoFuSTX:
             return
         # Den ersten automatischen Durchlauf anstoßen
         self.poll_fldigi_rx()
-    def poll_fldigi_rx(self):
+    def poll_fldigi_rx(self): # <--- Prüft die fldigi-Schnittstelle und plant sich selbst nach 60 Sek. neu ein.
         """Prüft die fldigi-Schnittstelle und plant sich selbst nach 60 Sek. neu ein"""
         mode = self.rx_combo.get()
         # Wenn zu "Kein RX" gewechselt wurde, Polling stoppen
@@ -4286,7 +4748,7 @@ class NoFuSTX:
         # Es gibt nur EINEN laufenden Timer, nicht mehrere
         if not mode == "Kein RX" and self.fldigi_polling_active:
             self.fldigi_after_id = self.root.after(60000, self.poll_fldigi_rx)
-    def check_rx_iaru(self, rx_text):
+    def check_rx_iaru(self, rx_text): # <--- Sammelt empfangene FLDIGI-Textblöcke und verarbeitet vollständige IARU-Meldungen. (Hier nochmal prüfen ob diese Funktion so arbeitet wie gedacht)
         """Sammelt empfangene FLDIGI-Textblöcke und verarbeitet vollständige IARU-Meldungen."""
         start_marker = "#NOFUSTX#Meldungstext#"
         end_marker = "---Ende der Meldung---"
@@ -4314,7 +4776,7 @@ class NoFuSTX:
                 self._process_rx_iaru_block(block)
             except Exception as e:
                 print(f"[IARU] Fehler bei der Verarbeitung empfangener Meldung: {e}")
-    def _process_rx_iaru_block(self, block):
+    def _process_rx_iaru_block(self, block): # <--- Extrahiert Header und Text aus einem kompletten IARU-Block und protokolliert ihn.
         """Extrahiert Header und Text aus einem kompletten IARU-Block und protokolliert ihn."""
         # Der Block beginnt mit dem Marker, kann aber auch noch zusätzliche Zeilen enthalten.
         payload = block
@@ -4352,7 +4814,7 @@ class NoFuSTX:
         source = "FLDIGI"
         self.receive_iaru_msg(source, header_lines, prio, body_text)
 # ---------- Voltmeter ----------
-    def finde_nofus_arduino(self):
+    def finde_nofus_arduino(self): # <--- Sucht nach einem Arduino mit dem Voltmeter, Erkennung nach NoFuS-TAG
         """
         Scannt alle verfügbaren Ports und sucht nach dem NoFuS-Erkennungs-Tag.
         """
@@ -4378,16 +4840,16 @@ class NoFuSTX:
                 # Port blockiert oder keine Rechte (z.B. Dialout-Gruppe unter Linux)
                 continue
         return None
-    def formatiere_spannung(self, wert):
+    def formatiere_spannung(self, wert): # <--- Verarbeite die Spannung vom Voltmeter
         if wert is None or wert < 0.5:
             return "N/A"
         return f"{wert:.2f} V"
-    def voltmeter_thread(self):
+    def voltmeter_thread(self): # <--- Voltmeter Thread (Überwachung der Spannung im Notfall-Koffer)
         # Erstellt den Hintergrund-Prozess
         monitor_thread = threading.Thread(target=self.starte_spannungs_monitor, daemon=True)
         # Startet ihn parallel zur Hauptsoftware
         monitor_thread.start()
-    def starte_spannungs_monitor(self):
+    def starte_spannungs_monitor(self): # <--- Starte Spannungs und Systemmonitor und schreibe ins Log
         # Automatische Suche starten
         automatischer_port = self.finde_nofus_arduino()
         if not automatischer_port:
@@ -4440,6 +4902,165 @@ class NoFuSTX:
             print(f"❌ Verbindung im laufenden Betrieb verloren: {e}")
             messagebox.showerror("Verbindungsfehler", f"Die Verbindung zum NoFuS-Spannungsmonitor wurde unterbrochen:\n{e}")
         
+    # =============================================================================
+    # NoFuS-TX v2.0 - MULTI-TREIBER HARDWARE STARTER
+    # =============================================================================
+    def init_nofus_v2_hardware(self): # <--- Neue Schnittstellen funktion Für alle extern angeschlossenen Geräte wie TNC, Arduino, oder Ähnliche die Kiss Sprechen
+        """
+        Der neue v2.0 Core-Starter. Geht deine AX25_PORTS durch und 
+        entscheidet anhand der Kategorie (ax, kiss, ip, soft), welcher
+        Hintergrund-Dienst gestartet wird.
+        """
+        modes = self.config.get("MODES", {})
+        ports_list = modes.get("AX25_PORTS", [])
+        
+        # Speicher für aktive serielle Verbindungen (für die spätere TX-Senderichtung)
+        self.active_hardware_connections = {}
+
+        for port_cfg in ports_list:
+            # Nur starten, wenn active auf True steht
+            if not port_cfg.get("active", False):
+                continue
+
+            # Wir holen deine exakten v2.0 Variablenbezeichnungen aus der Config
+            port = port_cfg.get("device")          # /dev/ttyUSB0-9, COM0-9, oder ax0/ax1
+            baud = int(port_cfg.get("BAUD_RATE", 9600))
+            hw_mode = port_cfg.get("hardware", "kiss") # Standardmäßig "kiss" falls leer
+            nickname = port_cfg.get("nickname", "Unbekannt")
+            port_call = port_cfg.get("call", "NOCALL")
+
+            if not port:
+                continue
+
+            # -----------------------------------------------------------------
+            # WEICHE 1: "ax" -> Der klassische Linux-Kernel-Stack
+            # -----------------------------------------------------------------
+            if hw_mode == "ax":
+                self.aprs_update_queue.put({
+                    "type": "log",
+                    "message": f"🐧 [{nickname}] Nutze Linux-AX.25 Stack auf Device: {port}"
+                })
+                # Hier klinken wir später deine neue socket.py ein!
+                # t_ax = threading.Thread(target=self.linux_ax25_worker, args=(port, port_call), daemon=True)
+                # t_ax.start()
+
+            # -----------------------------------------------------------------
+            # WEICHE 2: "kiss" -> Der neue universelle USB/Seriell-Worker
+            # -----------------------------------------------------------------
+            elif hw_mode == "kiss":
+                t_kiss = threading.Thread(
+                    target=self.universal_kiss_worker,
+                    args=(port, baud, nickname, port_call),
+                    daemon=True,
+                    name=f"NoFuS_KISS_{nickname}"
+                )
+                t_kiss.start()
+
+            # -----------------------------------------------------------------
+            # WEICHE 3: "ip" -> Netzwerk-basierte Verbindung (Hamnet / TCP-KISS)
+            # -----------------------------------------------------------------
+            elif hw_mode == "ip":
+                self.aprs_update_queue.put({
+                    "type": "log",
+                    "message": f"🌐 [{nickname}] Vorbereitung für IP/Hamnet-Port auf {port}..."
+                })
+                # Hier kommt später der TCP-Socket-Worker hin
+
+            # -----------------------------------------------------------------
+            # WEICHE 4: "soft" -> API-basierte Hardware (Meshtastic, Voltmeter etc.)
+            # -----------------------------------------------------------------
+            elif hw_mode == "soft":
+                self.aprs_update_queue.put({
+                    "type": "log",
+                    "message": f"🤖 [{nickname}] Starte Software-API/Treiber für {port} ({nickname})..."
+                })
+                # Hier wird z.B. der native Meshtastic-Python-Treiber eingeklinkt
+            
+    def universal_kiss_worker(self, port, baudrate, nickname, port_call): # <--- Der universelle KISS-Worker für serielle USB-Geräte
+        """
+        Der CPU-schonende KISS-Arbeiter für das USB-Kabel.
+        Lauscht auf dem Port, filtert KISS-Frames und schont die CPU im Leerlauf.
+        """
+
+        self.aprs_update_queue.put({
+            "type": "log",
+            "message": f"🔌 [{nickname}] Öffne KISS-Port {port} ({baudrate} Baud)..."
+        })
+
+        try:
+            # timeout=0.5 zwingt den Thread zum Schlafen, wenn keine Daten da sind (0% CPU!)
+            ser = serial.Serial(port=port, baudrate=baudrate, timeout=0.5)
+            self.active_hardware_connections[port] = ser
+        except Exception as e:
+            self.aprs_update_queue.put({
+                "type": "log",
+                "message": f"❌ [{nickname}] Serieller Fehler auf {port}: {e}"
+            })
+            return
+
+        # --- RETRO-TNC INITIALISIERUNG (TNC2S & Co.) ---
+        # Da wir im KISS-Modus sind, schicken wir den Aufwachbefehl
+        try:
+            ser.write(b"\r\n\r\n\r\n")
+            time.sleep(0.1)
+            ser.write(b"KISS ON\r")
+            time.sleep(0.1)
+            ser.write(b"RESTART\r")
+            time.sleep(0.3)
+            self.aprs_update_queue.put({
+                "type": "log",
+                "message": f"✅ [{nickname}] TNC-Initialisierung an {port} gesendet."
+            })
+        except Exception as e:
+            self.aprs_update_queue.put({
+                "type": "log",
+                "message": f"⚠️ [{nickname}] Initialisierungsfehler: {e}"
+            })
+
+        buffer = b""
+        FEND = b'\xc0'
+
+        # --- REINER EMPFANGS-LOOP ---
+        while True:
+            try:
+                chunk = ser.read(256)
+                if not chunk:
+                    continue
+
+                buffer += chunk
+
+                while buffer.count(FEND) >= 2:
+                    start_idx = buffer.find(FEND)
+                    end_idx = buffer.find(FEND, start_idx + 1)
+                    
+                    if end_idx != -1:
+                        kiss_frame = buffer[start_idx : end_idx + 1]
+                        buffer = buffer[end_idx + 1 :]
+                        
+                        if len(kiss_frame) <= 3:
+                            continue
+
+                        # Ein sauberes Datenpaket ist da! Wir übergeben es der Hauptschleife.
+                        self.aprs_update_queue.put({
+                            "type": "raw_kiss_frame",
+                            "hardware": "kiss",
+                            "port": port,
+                            "nickname": nickname,
+                            "port_call": port_call,
+                            "frame": kiss_frame
+                        })
+                    else:
+                        break
+
+            except Exception as e:
+                self.aprs_update_queue.put({
+                    "type": "log",
+                    "message": f"⚠️ [{nickname}] Verbindung unterbrochen: {e}"
+                })
+                if port in self.active_hardware_connections:
+                    del self.active_hardware_connections[port]
+                break
+            
 # ---------- MAIN ----------
 # Startet die Anwendung, indem die Hauptklasse instanziiert und die Tkinter-Hauptschleife gestartet wird.
 if __name__ == "__main__":
