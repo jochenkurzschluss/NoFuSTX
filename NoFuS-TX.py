@@ -162,12 +162,13 @@ try:
 except ImportError:
     urllib = None
     shutil = None
+from lang.default_lang import DEFAULT_LANG_DICT
 
 # Hauptklasse der Anwendung
 class NoFuSTX:
     def __init__(self, root):
         self.root = root
-        self.root.title("NoFuS-TX - Einsatzleitsoftware v1.9.16d")
+        self.root.title("NoFuS-TX - Notfunk-Software")
         try:
             # Wir laden das PNG als PhotoImage
             icon_img = tk.PhotoImage(file="icons/NoFuSTX.png")
@@ -185,7 +186,7 @@ class NoFuSTX:
         os.makedirs(self.msg_folder, exist_ok=True)
         self.msg_history_entries = {}
         self.counter_number_msg = 1 # --- IARU Mitteilungszähler ---
-
+        self.version_nummer = f"1.9.16d (Alpha)"
         # Voltmeter-Gerät
         self.BAUD_RATE = 9600  # Standard-Baudrate für die serielle Kommunikation mit dem Voltmeter (kann in der Konfiguration angepasst werden)
 
@@ -216,7 +217,7 @@ class NoFuSTX:
         self.recive_buffer = ""
         
         self.user_say_no = False  # Flag, um zu verhindern, dass der Nutzer mehrfach gefragt wird, wenn er einmal "Nein" gesagt hat - im LAN Sync
-        
+        self.rx_mesh_ch_tab = 0
         
         # --- Für Konfig und andere Standards
         self.options = {
@@ -379,7 +380,8 @@ class NoFuSTX:
                 "debug": False,
                 "equip_check": False,
                 "if_mesh_gps": False,
-                "voltmeter": False
+                "voltmeter": False,
+                "SPRACHE": "DE",          # <--- Hier definieren wir den Standard für den Erststart!
                 },
             # Standard-Lagekarte: ca. 10 km Radius um 51.9621817 / 9.6509120
             "MAP": {
@@ -426,8 +428,13 @@ class NoFuSTX:
                 ]
         }
         # Einstellungen und Frequenzen laden und dabei die Struktur reparieren, falls neue Felder oder Bereiche in der Standardkonfiguration hinzugekommen sind, damit die App nach Updates mit alten Konfigurationen weiterhin läuft, ohne wichtige Einstellungen zu verlieren.
+        self.default_lang_dict = DEFAULT_LANG_DICT
+        self.lang_folder = os.path.join(base_path, "lang")
+        os.makedirs(self.lang_folder, exist_ok=True)
+        self.default_lang = "DE" # Standart Sprache
         self.load_settings()
         self.load_frequencies()
+        self.load_language()
         
         # Wenn in deiner Config eingestellt ist, dass Debug AUS sein soll:
         if not self.config.get("GUI", {}).get("debug", False):
@@ -451,7 +458,11 @@ class NoFuSTX:
         self.interface: Any = None # <--- Schnittstellen-Objekt für LoRa Mesh (z.B. SerialInterface oder NetworkInterface, je nach ConnectionMode)
         self.mesh_kanal_name = None
         self.mesh_channels_dict = {}
+        self.mesh_dm_history = {} # <--- Mesh Direktnachrichten Speicher
         self.mesh_home_auto_updated = False # <--- Flag, um zu verhindern, dass die Home-Position mehrfach automatisch aktualisiert wird, wenn das GPS-Signal schwankt
+        self.dm_window = None        # Speichert das Toplevel-Fenster, wenn es offen ist
+        self.dm_tabs = {}            # Speichert die Text-Widgets der Absender: { "sender_id": text_widget }
+        self.dm_notebook = None      # Speichert das Notebook innerhalb des Fensters
 
         # Prüfen, ob LORA_MESH in deiner Config aktiv geschaltet ist
         if self.config["MODES"].get("LORA_MESH", {}).get("active"):
@@ -463,7 +474,8 @@ class NoFuSTX:
             self.check_equip()
         if self.config.get("GUI", {}).get("voltmeter", True): # <--- Wenn in der Config eingestellt ist, dass das Voltmeter aktiviert sein soll, dann starten wir es direkt beim Programmstart
             self.voltmeter_thread()
-
+        self.squelch_var = 0
+        self.play_beep()
     # --------- KONFIGURATIONSLADUNG & -SPEICHERUNG ----------
     def _repair_config_structure(self, config: Any, defaults: Any) -> bool: # <--- Funtion die eine Prüfung der Konfigiration durchführt und ggf. Reperiert!
         """
@@ -546,6 +558,62 @@ class NoFuSTX:
         except Exception:
             self.config = copy.deepcopy(self.default_config)
             self.save_settings()
+
+    def load_language(self): # <--- Lädt die Sprachdatei und repariert fehlende Keys anhand des Standard-Fallbacks
+        # 1. Sprache aus der Config holen (Fallbback auf dein self.default_lang "DE")
+        lang_code = self.config.get("GUI", {}).get("SPRACHE", self.default_lang)
+        
+        # Pfad dynamisch mit deinem self.lang_folder zusammenbauen
+        file_path = os.path.join(self.lang_folder, f"{lang_code}.json")
+
+        # Fall A: Die gewünschte Datei existiert gar nicht auf der Festplatte
+        if not os.path.exists(file_path):
+            print(f"[i18n] ⚠️ {lang_code}.json nicht gefunden! Nutze kompletten Default-Fallback.")
+            # Falls die DE.json (dein Standard) nicht da ist, müssen wir self.tr 
+            # zumindest als leeres Dict anlegen, damit die Reparatur greift.
+            self.tr = {}
+            # Hier versuchen wir die originale DE.json als Basis zu laden, falls verfügbar
+            default_path = os.path.join(self.lang_folder, f"{self.default_lang}.json")
+            if os.path.exists(default_path):
+                try:
+                    with open(default_path, "r", encoding="utf-8") as f:
+                        self.tr = json.load(f)
+                except Exception:
+                    pass
+            return
+
+        # Fall B: Datei ist da -> Laden und mit der internen default_lang-Struktur abgleichen
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                self.tr = json.load(f)
+
+            # Struktur prüfen und reparieren (falls z.B. eine ältere EN.json geladen wurde)
+            # Hinweis: 'self.default_lang_dict' wäre das im Code fest hinterlegte vollständige Wörterbuch
+            if hasattr(self, 'default_lang_dict'):
+                self._repair_lang_structure(self.tr, self.default_lang_dict)
+
+            print(f"[i18n] 👍 Sprache erfolgreich geladen und geprüft: {lang_code}")
+
+        except Exception as e:
+            print(f"[i18n] ❌ Fehler beim Laden von {lang_code}.json: {e}. Nutze leeres Standard-Wörterbuch.")
+            self.tr = {}
+
+    def _repair_lang_structure(self, current, default):
+        """Durchläuft das Wörterbuch und ergänzt fehlende Keys aus dem Default."""
+        repaired = False
+        for key, value in default.items():
+            if key not in current:
+                # Key fehlt komplett -> Aus dem Standard-Wörterbuch nachziehen
+                current[key] = copy.deepcopy(value)
+                repaired = True
+                print(f"[i18n] 🔧 Fehlenden Key repariert: {key}")
+            elif isinstance(value, dict):
+                # Wenn es ein Unterordner (dict) ist, gehen wir eine Ebene tiefer
+                if not isinstance(current[key], dict):
+                    current[key] = {}
+                if self._repair_lang_structure(current[key], value):
+                    repaired = True
+        return repaired
         
     def check_dependencies(self): # <--- Abhängigkeiten Prüfen und den Nutzer informieren, welche optionalen Module fehlen, damit er sie installieren kann, um alle Funktionen nutzen zu können!
         missing = []
@@ -2004,16 +2072,16 @@ class NoFuSTX:
         self.sys_monitor_container.grid(row=0, column=1, pady=2)
 
         # Die Telemetrie-Labels (U1 bis U4 + CPU) nebeneinander packen
-        self.lbl_u1 = tk.Label(self.sys_monitor_container, text="Batterie: na.", fg="#00FF00", bg="#000A00", font=("Courier", 10, "bold"))
+        self.lbl_u1 = tk.Label(self.sys_monitor_container, text="Batterie: ???", fg="#00FF00", bg="#000A00", font=("Courier", 10, "bold"))
         self.lbl_u1.pack(side=tk.LEFT, padx=8)
 
-        self.lbl_u2 = tk.Label(self.sys_monitor_container, text="Solarenergie: na.", fg="#00FF00", bg="#000A00", font=("Courier", 10, "bold"))
+        self.lbl_u2 = tk.Label(self.sys_monitor_container, text="Solarenergie: ???", fg="#00FF00", bg="#000A00", font=("Courier", 10, "bold"))
         self.lbl_u2.pack(side=tk.LEFT, padx=8)
 
-        self.lbl_u3 = tk.Label(self.sys_monitor_container, text="Ausgabe U1: na.", fg="#00FF00", bg="#000A00", font=("Courier", 10, "bold"))
+        self.lbl_u3 = tk.Label(self.sys_monitor_container, text="Ausgabe U1: ???", fg="#00FF00", bg="#000A00", font=("Courier", 10, "bold"))
         self.lbl_u3.pack(side=tk.LEFT, padx=8)
 
-        self.lbl_u4 = tk.Label(self.sys_monitor_container, text="Ausgabe U2: na.", fg="#00FF00", bg="#000A00", font=("Courier", 10, "bold"))
+        self.lbl_u4 = tk.Label(self.sys_monitor_container, text="Ausgabe U2: ???", fg="#00FF00", bg="#000A00", font=("Courier", 10, "bold"))
         self.lbl_u4.pack(side=tk.LEFT, padx=8)
 
         # Optischer Trenner vor der CPU
@@ -2117,8 +2185,8 @@ class NoFuSTX:
         ]
 
         for i, (txt, var) in enumerate(labels):
-            tk.Label(self.wx_display_frame, text=txt, font=("Arial", 11, "bold")).grid(row=i, column=0, sticky="w", padx=10, pady=10)
-            tk.Label(self.wx_display_frame, textvariable=var, font=("Arial", 11)).grid(row=i, column=1, sticky="w", padx=10, pady=10)
+            tk.Label(self.wx_display_frame, text=txt, font=("Arial", 14, "bold")).grid(row=i, column=0, sticky="w", padx=10, pady=10)
+            tk.Label(self.wx_display_frame, textvariable=var, font=("Arial", 14)).grid(row=i, column=1, sticky="w", padx=10, pady=10)
 
         self.wx_avg_vars = {
             "temp": tk.StringVar(value="-- °C"),
@@ -2137,14 +2205,14 @@ class NoFuSTX:
         ]
 
         for i, (txt, var) in enumerate(avg_labels):
-            tk.Label(self.wx_avg_frame, text=txt, font=("Arial", 10, "bold")).grid(row=i, column=0, sticky="w", padx=10, pady=5)
-            tk.Label(self.wx_avg_frame, textvariable=var, font=("Arial", 10)).grid(row=i, column=1, sticky="w", padx=10, pady=5)
+            tk.Label(self.wx_avg_frame, text=txt, font=("Arial", 14, "bold")).grid(row=i, column=0, sticky="w", padx=10, pady=5)
+            tk.Label(self.wx_avg_frame, textvariable=var, font=("Arial", 14)).grid(row=i, column=1, sticky="w", padx=10, pady=5)
 
         # RECHTER BEREICH: Liste der WX-Stationen in der Nähe
         self.wx_list_frame = ttk.LabelFrame(self.wx_main_frame, text=" Empfangene Stationen ")
         self.wx_list_frame.pack(side=tk.RIGHT, fill="y", padx=5)
 
-        self.wx_listbox = tk.Listbox(self.wx_list_frame, width=30, font=("Courier", 10), bg="#F0F0F0", fg="#000000")
+        self.wx_listbox = tk.Listbox(self.wx_list_frame, width=30, font=("Courier", 14), bg="#F0F0F0", fg="#000000")
         self.wx_listbox.pack(expand=True, fill="both", padx=5, pady=5)
         
 
@@ -2239,33 +2307,51 @@ class NoFuSTX:
         if hasattr(self, 'sdr_mode_var'):
             self.sdr_mode_var.set(mode)
     
-    def start_direct_sdr(self, freq, mode): # <--- Startet einen direkten RTL-SDR Prozess mit den angegebenen Frequenz- und Modus-Einstellungen. Es wird sichergestellt, dass vorherige SDR-Prozesse sauber beendet werden, um Konflikte zu vermeiden. Die Audioausgabe erfolgt über ffplay, um die Latenz zu minimieren. Es werden auch die konfigurierten Parameter für Samplingrate und De-Emphasis berücksichtigt.
+    def start_direct_sdr(self, freq, mode):
         self.stop_direct_sdr()
 
-        # Hardware-Parameter
+        # Hardware-Parameter aus der Config laden
         sdr_rate = self.config.get("SDR", {}).get("sdr_rate", "2400k")
-        audio_rate_sdr = self.config.get("SDR", {}).get("audio_rate_sdr", "48k")
-        audio_rate_aplay = self.config.get("SDR", {}).get("audio_rate_aplay", "48000")
+        audio_rate_sdr = self.config.get("SDR", {}).get("audio_rate_sdr", "24k") # Standard für rtl_fm ist 24k
+        
+        # Standard-Audio-Ausgabe für ffplay
+        audio_rate_aplay = "24000" 
 
-        # Mapping der Modi (AM, FM, etc.)
-        mode_map = {"FM": "fm", "WFM": "wfm", "AM": "am", "LSB": "lsb", "USB": "usb"}
+        # Mapping der Modi für rtl_fm
+        mode_map = {"FM": "fm", "WFM": "wbfm", "AM": "am", "LSB": "lsb", "USB": "usb"}
         m = mode_map.get(mode, "fm")
 
-        # Der Befehl mit DC-Removal und De-Emphasis
-        # -E dc: Entfernt den Mittenspike
-        # -E deemp: Macht den Sound angenehmer (weniger Rauschen)
-        # -l 0: Squelch aus (Rauschen hörbar)
-        if self.deemp_var.get() == True:
-            cmd = (f"rtl_fm -M {m} -f {freq} -s {sdr_rate} -r {audio_rate_sdr} -g 49 -E dc -E deemp -l 0 |"
-               f"ffplay -nodisp -autoexit -loglevel quiet -f s16le -ar {audio_rate_aplay} -ac 1 -i pipe:0")
+        # SPEZIALFALL WBFM: Laut Help-Text gibt WBFM standardmäßig 32k Audio aus!
+        if mode == "WFM":
+            audio_rate_aplay = "32000"
         else:
-            cmd = (f"rtl_fm -M {m} -f {freq} -s {sdr_rate} -r {audio_rate_sdr} -g 49 -E dc -l 0 |"
-               f"ffplay -nodisp -autoexit -loglevel quiet -f s16le -ar {audio_rate_aplay} -ac 1 -i pipe:0")
+            # Für FM, AM, SSB nutzen wir die Standard-24k von rtl_fm
+            audio_rate_aplay = "24000"
 
+        # Squelch sicher auslesen (deine funktionierende Reparatur!)
+        try:
+            sq_val = int(self.squelch_spinbox.get()) if hasattr(self, 'squelch_spinbox') else 0
+        except:
+            sq_val = 0
+
+        # Standardmäßig verpassen wir dem Signal z.B. einen festen 6dB Boost.
+        # Du kannst statt "6dB" auch "12dB" nehmen, wenn es noch zu leise ist, 
+        # oder den Wert dynamisch aus der Config/GUI holen.
+        gain_val = "6dB" 
+
+        # Der Befehl mit dem neuen Audio-Filter (-af volume=...)
+        if self.deemp_var.get() == True:
+            print(f"[SDR] Rauschsperre: {sq_val} | Modus: {m} | Gain: {gain_val}")
+            cmd = (f"rtl_fm -M {m} -f {freq} -g 49 -E dc -E deemp -l {sq_val} |"
+               f"ffplay -nodisp -autoexit -loglevel quiet -f s16le -ar {audio_rate_aplay} -ac 1 -af volume={gain_val} -i pipe:0")
+        else:
+            print(f"[SDR] Rauschsperre: {sq_val} | Modus: {m} | Gain: {gain_val} (ohne deemp)")
+            cmd = (f"rtl_fm -M {m} -f {freq} -g 49 -E dc -l {sq_val} |"
+               f"ffplay -nodisp -autoexit -loglevel quiet -f s16le -ar {audio_rate_aplay} -ac 1 -af volume={gain_val} -i pipe:0")
+            
         def _run():
-            # Startet den Prozess in einer neuen Session, damit wir ihn sauber killen können
-            self.sdr_process = subprocess.Popen(cmd, shell=True, preexec_fn=os.setsid, stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-            print(f"SDR DIREKT AKTIV: {freq} Hz | Mode: {m} | DC-Filter: AN")
+            self.sdr_process = subprocess.Popen(cmd, shell=True, preexec_fn=os.setsid, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(f"SDR DIREKT AKTIV: {freq} Hz | Mode: {m} | Squelch: {sq_val}")
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -2363,6 +2449,24 @@ class NoFuSTX:
                            command=lambda v: self.sdr_freq_var.set(str(int(float(v)))))
         slider.set(145500000)
         slider.pack(fill="x", pady=5)
+
+        self.squelch_var = tk.IntVar(value=0)
+
+        # 2. Das Label für die Anzeige
+        squelch_label = tk.Label(ctrl_row, text="Rauschsperre:")
+        squelch_label.pack(side="left", padx=5)
+
+        # 3. Die Spinbox erstellen
+        self.squelch_spinbox = tk.Spinbox(
+            ctrl_row, 
+            from_=0,             # Minimaler Wert (Unterstrich bei from_ ist wichtig in Python!)
+            to=100,              # Maximaler Wert
+            increment=1,         # Schrittweite pro Klick
+            textvariable=self.squelch_var, # Verknüpfung mit deiner Variable
+            width=6              # Breite des Feldes (reicht dicke für Zahlen bis 100)
+        )
+        
+        self.squelch_spinbox.pack(side="left", padx=5)
 
         # Status-Hinweis
         info_lbl = ttk.Label(sdr_container, text="ACHTUNG! Nicht jeder SDR-Stick kann den ganzen angebotenen Frequenzbereich!\nGqrx Remote (7356) muss aktiv sein.", font=("Arial", 8, "italic"))
@@ -3231,8 +3335,9 @@ class NoFuSTX:
     def show_about_window(self): # <--- Über NoFuS-TX Fenster erstellen
         about_win = tk.Toplevel(self.root)
         about_win.title("Über NoFuS-TX")
-        about_win.geometry("400x300")
-        tk.Label(about_win, text="NoFuS-TX - Einsatzleitsoftware v1.9.16d").pack(pady=10)
+        about_win.geometry("400x450")
+        tk.Label(about_win, text="NoFuS-TX - Notfunk-Software").pack(pady=10)
+        tk.Label(about_win, text=f"Version: {self.version_nummer}").pack(pady=10)
         tk.Label(about_win, text="© 2026 NoFuS-TX DO2ITH").pack(pady=5)
         tk.Label(about_win, text="Alle Rechte vorbehalten.").pack(pady=10)
         tk.Label(about_win, text="E-Mail: info@ithnet.de").pack(pady=10)
@@ -3244,7 +3349,7 @@ class NoFuSTX:
         # Hardware- & Modi-Konfiguration inkl. Drucker und SSTV-Spezialfeldern
         win = tk.Toplevel(self.root)
         win.title("Hardware Konfiguration")
-        win.geometry("800x700")
+        win.geometry("850x550")
         try:
             # Erstmal das Icon
             conf_icon = tk.PhotoImage(file="icons/settings.png") 
@@ -3786,6 +3891,7 @@ class NoFuSTX:
         self.digi_terminals = {}
         nb = ttk.Notebook(self.tab_digi)
         nb.pack(expand=1, fill="both")
+        
         # AX.25 Ports als eigene Tabs
         for port in self.config["MODES"]["AX25_PORTS"]:
             if port.get("active"):
@@ -3793,88 +3899,139 @@ class NoFuSTX:
                 nb.add(f, text=f"AX: {port.get('nickname', '')}")
                 t_rx = tk.LabelFrame(f, text=" Funkverkehr (RX Text) ", fg="#00FF00", bg="#001100")
                 t_rx.pack(expand=1, fill="both", padx=5, pady=2)
-                t = tk.Text(t_rx, bg="#001100", fg="#00FF00", font=("Arial", 11))
+                t = tk.Text(t_rx, bg="#001100", fg="#00FF00", font=("Arial", 14))
                 t.pack(expand=1, fill="both")
                 t_tx = tk.LabelFrame(f, text=" Funkverkehr (TX Text) ", fg="#00FF00", bg="#001100")
                 t_tx.pack(expand=1, fill="both", padx=5, pady=2)
-                t_tx = tk.Entry(t_tx, bg="#001100", fg="#00FF00", font=("Arial", 11), borderwidth=0)
+                t_tx = tk.Entry(t_tx, bg="#001100", fg="#00FF00", font=("Arial", 14), borderwidth=0)
                 t_tx.pack(expand=1, fill="both")
                 key = f"AX:{port.get('nickname', '')}"
                 self.digi_terminals[key] = t
+                
         for mode, data in self.config["MODES"].items():
             if mode == "LORA_MESH" and data.get("active"):
                 f = ttk.Frame(nb)
                 nb.add(f, text=f"{mode}")
                 self.digi_terminals[mode] = {}
+                
                 # --- RECHTE SEITE: Die Liste zuerst ---
                 lf_list = tk.LabelFrame(f, text=" Aktive Nodes ", fg="#00FF00", bg="#001100")
                 lf_list.pack(side="right", fill="both", padx=5, pady=2)
-                # 1. Den Scrollbalken erstellen (Wichtig: bg/troughcolor für dein Dunkel-Design)
+                
                 scrollbar = tk.Scrollbar(lf_list, orient="vertical", bg="#001100")
-                scrollbar.pack(side="right", fill="y") # Klebt rechts und geht von oben nach unten
+                scrollbar.pack(side="right", fill="y")
                 scrollbarR = tk.Scrollbar(lf_list, orient="horizontal", bg="#001100")
                 scrollbarR.pack(side="bottom", fill="x")
-                # 2. Die Listbox erstellen (jetzt mit side="left" und der yscrollcommand-Verknüpfung)
+                
                 node_list = tk.Listbox(
                     lf_list, 
                     bg="#001100", 
                     fg="#00FF00", 
-                    font=("Arial", 10), 
+                    font=("Courier", 14), 
                     borderwidth=0, 
                     width=35,
-                    yscrollcommand=scrollbar.set, # <--- Hier verknüpfen!
+                    yscrollcommand=scrollbar.set,
                     xscrollcommand=scrollbarR.set
                 )
                 node_list.pack(side="left", expand=1, fill="both", padx=5, pady=5)
-                # 3. Dem Scrollbalken sagen, was er steuern soll
-                scrollbar.config(command=node_list.yview) # <--- Und hier zurück-verknüpfen!
+                scrollbar.config(command=node_list.yview)
                 scrollbarR.config(command=node_list.xview)
-                # Wie gewohnt im Dictionary speichern
+                
                 self.digi_terminals[mode]["node_list"] = node_list
+                self.digi_terminals["LORA_MESH"]["node_list"].bind("<Motion>", self.show_node_tooltip)
+                self.digi_terminals["LORA_MESH"]["node_list"].bind("<Leave>", self.hide_node_tooltip)
+                self.digi_terminals["LORA_MESH"]["node_list"].bind("<Double-1>", self.on_mheard_double_click)
+                
                 # --- LINKE SEITE ---
                 left_container = tk.Frame(f, bg="#001100")
                 left_container.pack(side="left", expand=1, fill="both")
+                
                 # MONITOR BEREICH
                 lf_mon = tk.LabelFrame(left_container, text=" System-Status / Monitor ", fg="#00FF00", bg="#001100")
                 lf_mon.pack(fill="x", padx=5, pady=2)
-                mon = tk.Text(lf_mon, height=8, bg="#001100", fg="#00FF00", font=("Arial", 10), borderwidth=0)
+                mon = tk.Text(lf_mon, height=8, bg="#001100", fg="#00FF00", font=("Arial", 14), borderwidth=0)
                 mon.pack(fill="x", padx=5, pady=5)
                 self.digi_terminals[mode]["monitor"] = mon
-                # RECEIVE BEREICH
-                lf_recv = tk.LabelFrame(left_container, text=" Funkverkehr (RX Text) ", fg="#00FF00", bg="#001100")
-                lf_recv.pack(expand=1, fill="both", padx=5, pady=2)
-                recv = tk.Text(lf_recv, height=10, bg="#001100", fg="#00FF00", font=("Arial", 11), borderwidth=0)
-                recv.pack(expand=1, fill="both", padx=5, pady=5)
-                self.digi_terminals[mode]["receive"] = recv
-                # SENDER BEREICH
-                lf_send = tk.LabelFrame(left_container, text=" Senden (TX Text) ", fg="#00FF00", bg="#001100")
-                lf_send.pack(fill="x", padx=5, pady=2)
-                send = tk.Entry(lf_send, bg="#001100", fg="#00FF00", font=("Arial", 11), borderwidth=0)
-                send.pack(fill="x", padx=5, pady=5)
-                send.bind("<Return>", self.on_mesh_send_enter)
-                self.digi_terminals[mode]["sender"] = send
+                
+                # Unterstrukturen für Kanäle anlegen
+                self.digi_terminals[mode]["receive_channels"] = {}
+                self.digi_terminals[mode]["sender_channels"] = {}  # <--- NEU: Platz für die Kanal-Sender
+                
+                # RECEIVE & SENDER BEREICH
+                if getattr(self, 'rx_mesh_ch_tab', 0) == 0 or not hasattr(self, 'mesh_channels_dict') or not self.mesh_channels_dict:
+                    # Fallback: Alles wie gehabt in einem einzigen Block, wenn keine Tabs aktiv sind
+                    lf_recv = tk.LabelFrame(left_container, text=" Funkverkehr (RX Text) ", fg="#00FF00", bg="#001100")
+                    lf_recv.pack(expand=1, fill="both", padx=5, pady=2)
+                    recv = tk.Text(lf_recv, height=10, bg="#001100", fg="#00FF00", font=("Arial", 14), borderwidth=0)
+                    recv.pack(expand=1, fill="both", padx=5, pady=5)
+                    
+                    lf_send = tk.LabelFrame(left_container, text=" Senden (TX Text) ", fg="#00FF00", bg="#001100")
+                    lf_send.pack(fill="x", padx=5, pady=2)
+                    send = tk.Entry(lf_send, bg="#001100", fg="#00FF00", font=("Arial", 14), borderwidth=0)
+                    send.pack(fill="x", padx=5, pady=5)
+                    send.bind("<Return>", self.on_mesh_send_enter)
+                    
+                    self.digi_terminals[mode]["receive"] = recv
+                    self.digi_terminals[mode]["sender"] = send
+                    self.digi_terminals[mode]["receive_channels"][0] = recv
+                    self.digi_terminals[mode]["sender_channels"][0] = send
+                else:
+                    # ECHTE REITER (TABS) FÜR RX UND TX PRO KANAL
+                    print(f"[MESH-UI] Erstelle Kanäle (RX+TX) als TABS hintereinander:\n{self.mesh_channels_dict}")
+                    
+                    channel_nb = ttk.Notebook(left_container)
+                    channel_nb.pack(expand=1, fill="both", padx=5, pady=2)
+                    
+                    for ch_index, ch_name in self.mesh_channels_dict.items():
+                        # Frame für den Kanal-Tab
+                        ch_frame = tk.Frame(channel_nb, bg="#001100")
+                        channel_nb.add(ch_frame, text=f" CH {ch_index}: {ch_name} ")
+                        
+                        # 1. Empfangsfeld im Tab
+                        lf_recv = tk.LabelFrame(ch_frame, text=f" Funkverkehr ({ch_name}) ", fg="#00FF00", bg="#001100")
+                        lf_recv.pack(expand=1, fill="both", padx=2, pady=2)
+                        recv = tk.Text(lf_recv, height=10, bg="#001100", fg="#00FF00", font=("Arial", 14), borderwidth=0)
+                        recv.pack(expand=1, fill="both", padx=5, pady=5)
+                        
+                        # 2. Sendefeld IM SELBEN TAB direkt darunter packen
+                        lf_send = tk.LabelFrame(ch_frame, text=f" Senden ({ch_name}) ", fg="#00FF00", bg="#001100")
+                        lf_send.pack(fill="x", padx=2, pady=2)
+                        send = tk.Entry(lf_send, bg="#001100", fg="#00FF00", font=("Arial", 14), borderwidth=0)
+                        send.pack(fill="x", padx=5, pady=5)
+                        
+                        # Event-Binding bleibt gleich, wir hängen aber Infos ans Widget (siehe Tipp unten)
+                        send.bind("<Return>", self.on_mesh_send_enter)
+                        send._mesh_channel_id = ch_index  # <--- Trick: Kanal-ID direkt ans Widget tackern!
+                        
+                        # Im Dictionary einsortieren
+                        self.digi_terminals[mode]["receive_channels"][ch_index] = recv
+                        self.digi_terminals[mode]["sender_channels"][ch_index] = send
+                    
+                    # Abwärtskompatibilität für alte Funktionen
+                    if 0 in self.digi_terminals[mode]["receive_channels"]:
+                        self.digi_terminals[mode]["receive"] = self.digi_terminals[mode]["receive_channels"][0]
+                    if 0 in self.digi_terminals[mode]["sender_channels"]:
+                        self.digi_terminals[mode]["sender"] = self.digi_terminals[mode]["sender_channels"][0]
+                
         # Weitere Modi als einfache Terminals
         for mode, data in self.config["MODES"].items():
             if mode not in ("AX25_PORTS", "APRS_IS", "LORA_MESH", "LORA_APRS") and data.get("active"):
                 f = ttk.Frame(nb)
                 nb.add(f, text=mode)
-                # Container für die beiden Bereiche (RX Text und Senden)
                 t_container = tk.Frame(f, bg="#001100")
                 t_container.pack(expand=1, fill="both")
-                # RX Bereich
+                
                 t_recive = tk.LabelFrame(t_container, text=" Funkverkehr (RX Text) ", fg="#00FF00", bg="#001100")
-                t_recive.pack(expand=1, fill="both", padx=5, pady=2) # expand=1 und fill="both" für das Hauptfenster
-                # WICHTIG: Das Text-Widget muss in 't_recive' gepackt werden, nicht in 't_container'!
-                t = tk.Text(t_recive, bg="#001100", fg="#00FF00", font=("Arial", 11), borderwidth=0)
+                t_recive.pack(expand=1, fill="both", padx=5, pady=2)
+                t = tk.Text(t_recive, bg="#001100", fg="#00FF00", font=("Arial", 14), borderwidth=0)
                 t.pack(expand=1, fill="both", padx=5, pady=5)
-                # TX Bereich
+                
                 t_send = tk.LabelFrame(t_container, text=" Senden (TX Text) ", fg="#00FF00", bg="#001100")
-                t_send.pack(fill="x", padx=5, pady=2) # Hier KEIN expand=1, damit das Eingabefeld schmal bleibt
-                # WICHTIG: Das Entry-Widget muss in 't_send' gepackt werden!
-                t_send_entry = tk.Entry(t_send, bg="#001100", fg="#00FF00", font=("Arial", 11), borderwidth=0)
+                t_send.pack(fill="x", padx=5, pady=2)
+                t_send_entry = tk.Entry(t_send, bg="#001100", fg="#00FF00", font=("Arial", 14), borderwidth=0)
                 t_send_entry.pack(fill="x", padx=5, pady=5)
                 t_send_entry.bind("<Return>", self.on_digimode_send_enter)
-                t_send_entry._digimode_mode = mode # type: ignore - Speichere den Modus direkt im Widget für den Send-Handler
+                t_send_entry._digimode_mode = mode # type: ignore
                 self.digi_terminals[mode] = {"receive": t, "sender": t_send_entry}
     # ---------- LOG ----------
     def get_utc_now(self): # <--- Hole den UTC Timestamp
@@ -3901,6 +4058,38 @@ class NoFuSTX:
             return dt.strftime("%H:%M:%S") # type: ignore
         except Exception:
             return None
+    def ago_rx(self, timestamp): # <--- Berechnet die vergangenen Minuten seit dem letzten RX unter Nutzung von get_utc_now
+        if not timestamp:
+            return "Nie"
+        try:
+            # 1. Deine vorhandene Funktion nutzen und direkt in Sekunden (Unix-Timestamp) umwandeln
+            jetzt_ts = time.time()
+            # 2. Differenz berechnen
+            diff_sekunden = float(jetzt_ts) - float(timestamp)
+            
+            # Sicherheitsnetz für minimale Zeitabweichungen
+            if diff_sekunden < 0:
+                diff_sekunden = 0
+                
+            # 3. In Minuten umrechnen
+            diff_minuten = diff_sekunden // 60
+            
+            # 4. Text-Ausgabe generieren
+            if diff_minuten < 1:
+                return "Jetzt"
+            elif diff_minuten < 60:
+                return f"{diff_minuten}Min."
+            else:
+                diff_stunden = diff_minuten // 60
+                rest_minuten = diff_minuten % 60
+                if diff_stunden < 24:
+                    return f"{diff_stunden}Std. {rest_minuten}Min."
+                else:
+                    return f"{diff_stunden // 24} Tagen"
+                    
+        except Exception as e:
+            print(f"[ago_rx Fehler]: {e}")
+            return "Fehler"
     def ensure_msg_folder(self): # <--- Stelle sicher, dass der Ordner für die IARU-Meldungen existiert
         os.makedirs(self.msg_folder, exist_ok=True)
     def load_message_counter(self): # <--- Lade den Zähler für die IARU-Meldungen, basierend auf der Konfiguration und den vorhandenen Meldungsdateien
@@ -4197,14 +4386,13 @@ class NoFuSTX:
             if config_pin:
                 print(f"[Mesh] 🔐 Sende Admin-Authentifizierung aus Config...")
                 try:
-                    # Bei neueren API-Versionen wird die Admin-PIN direkt an den lokalen Node-Key übergeben,
-                    # damit nachfolgende Befehle wie getMyNodeInfo() autorisiert sind.
-                    # (Je nach genauer API-Version setzt man das direkt im inneren Radio-Interface)
+                    # Der direkte, sichere Weg in der Python API ohne den Umweg über die 'set_admin_pin' Methode:
                     if hasattr(mesh_iface, "localNode") and mesh_iface.localNode:
-                        # Setzt die PIN für die laufende Session
-                        mesh_iface.localNode.set_admin_pin(str(config_pin))
+                        mesh_iface.localNode.localConfig.security.admin_pin_code = int(config_pin) # Als Zahl übergeben!
+                        print(f"[Mesh] 🔐 Admin-PIN im API-Interface gesetzt.")
+                    
                 except Exception as pin_err:
-                    print(f"[Mesh] ⚠️ Konnte Admin-PIN nicht setzen (Evtl. alte API-Version?): {pin_err}")
+                    print(f"[Mesh] ⚠️ Konnte Admin-PIN nicht setzen: {pin_err}")
 
             # 3. Jetzt holen wir die Node-Infos (das schlägt ohne PIN bei neuer Firmware fehl)
             d = mesh_iface.getMyNodeInfo()
@@ -4215,7 +4403,7 @@ class NoFuSTX:
             
             # Deine Start-Kette für den Mesh-Betrieb
             if pub is not None:
-                pub.subscribe(self.on_receive, "meshtastic.receive")
+                pub.subscribe(self.on_mesh_receive, "meshtastic.receive")
             # Hier Holen wir die Bestehenden Kanäle im Node
             try:
                 self.mesh_kanal_name = self.interface.localNode.channels
@@ -4237,15 +4425,19 @@ class NoFuSTX:
                         
                         # In unserem Wörterbuch speichern (z.B. {1: "NoFuS"})
                         self.mesh_channels_dict[ch_index] = ch_name
+                        self.rx_mesh_ch_tab = self.rx_mesh_ch_tab +1
+
                 
                 print(f"[Mesh] 🗺️ Erkannte Kanal-Zuweisung: {self.mesh_channels_dict}")
+                
                 
             except Exception as f:
                 print(f"[Mesh] Fehler beim Kanal Holen\n {f} \n")
                 self.mesh_channels_dict = {0: "PRIMARY"} # Fallback, damit es nicht kracht
-
+            
+            self.setup_digimode_terminals()
             self.meshtastic_test()
-            self.start_monitor_thread()            
+            self.start_mesh_monitor_thread()            
             
         except Exception as e:
             self.mesh_connected = False
@@ -4353,33 +4545,154 @@ class NoFuSTX:
         except Exception as e:
             print(f"Fehler bei Hardware Zugriff: {e}")
             return None
-    def mesh_my_heard(self): # <--- Holt die Liste der zuletzt gehörten Mesh-Teilnehmer und zeigt sie im Monitor an, inklusive Name, ID, letztem Kontakt und SNR, und aktualisiert diese Liste alle 3 Minuten
+        
+    def show_node_tooltip(self, event): # <--- Zeigt ein schwebendes Info-Fenster (Tooltip) über dem aktuellen Listbox-Eintrag
+        # 1. Welches Element ist unter der Maus?
+        listbox = event.widget
+        index = listbox.nearest(event.y)
+        
+        # Den Header (Zeile 0) überspringen wir
+        if index == 0:
+            self.hide_node_tooltip(None)
+            return
+            
         try:
-            # Das Dictionary mit allen bekannten Teilnehmern
+            # Den Text des Eintrags holen, um den LongName zu extrahieren
+            entry_text = listbox.get(index)
+            # Da wir mit festen Breiten formatieren ({long_name:<20}), splitte am Trenner
+            long_name = entry_text.split("|")[0].strip()
+            
+            # 2. Die passenden Daten aus der Mesh-Datenbank fischen
             mesh_iface = cast(Any, self.interface)
             nodes = getattr(mesh_iface, "nodes", None) or {}
+            
+            node_details = "Keine weiteren Infos"
+            for n_id, n_data in nodes.items():
+                user = n_data.get('user', {})
+                
+                if user.get('longName') == long_name:
+                    # --- HIER KORRIGIERT: Aus n_data holen, nicht aus user! ---
+                    last_heard_raw = n_data.get('lastHeard')
+                    
+                    if last_heard_raw:
+                        last_heard = self.formatted_utc_timestamp(timestamp=last_heard_raw)
+                    else:
+                        last_heard = "Nie"
+                        
+                    lname = user.get('longName')
+                    sname = user.get('shortName')
+                    hex_id = user.get('id', 'Unbekannt')
+                    mac_addr = user.get('macaddr', 'Unbekannt')
+                    snr = n_data.get('snr', 'N/A')
+                    
+                    # Hier deine super ausgerichtete Monospace-Anzeige:
+                    node_details = f"LongName: {lname}\nKurzName: {sname}\nLast-RX:  {last_heard}\nID      : {hex_id}\nMAC     : {mac_addr}\nSNR     : {snr} dB"
+                    break
+            
+            # 3. Altes Fenster zerstören, falls vorhanden
+            if hasattr(self, 'mesh_tooltip_win') and self.mesh_tooltip_win:
+                self.mesh_tooltip_win.destroy()
+                
+            # 4. Neues schwebendes Fenster (Toplevel) erstellen
+            self.mesh_tooltip_win = tk.Toplevel(self.root)
+            self.mesh_tooltip_win.wm_overrideredirect(True) # Rahmen und Schließen-Button ausblenden
+            
+            # Position direkt neben dem Mauszeiger berechnen
+            x = event.x_root + 15
+            y = event.y_root + 10
+            self.mesh_tooltip_win.wm_geometry(f"+{x}+{y}")
+            
+            # Der Inhalt des Info-Fensters
+            lbl = tk.Label(
+                self.mesh_tooltip_win, 
+                text=node_details, 
+                justify="left", 
+                background="#ffffcc", # Schönes, klassisches Notizgelb
+                foreground="#000000",
+                relief="solid", 
+                borderwidth=1, 
+                font=("Courier", 12, "normal")
+            )
+            lbl.pack()
+            
+        except Exception as e:
+            print(f"[Tooltip-Fehler]: {e}")
+
+    def hide_node_tooltip(self, event): # <--- Schließt das schwebende Info-Fenster, wenn die Maus das Widget verlässt
+        if hasattr(self, 'mesh_tooltip_win') and self.mesh_tooltip_win:
+            self.mesh_tooltip_win.destroy()
+            self.mesh_tooltip_win = None
+
+    def mesh_my_heard(self): # <--- Holt die Liste der zuletzt gehörten Mesh-Teilnehmer (Schlanke Version für Tooltip-Nutzung)
+        try:
+            mesh_iface = cast(Any, self.interface)
+            nodes = getattr(mesh_iface, "nodes", None) or {}
+            
             self.digi_terminals["LORA_MESH"]["node_list"].delete(0, "end")
-            self.digi_terminals["LORA_MESH"]["node_list"].insert("end", f"Name                 | ID           | Letzter Kontakt(UTC) | SNR")
+            
+            # Hier werfen wir das SNR aus dem Header, weil die Liste jetzt schmal ist!
+            self.digi_terminals["LORA_MESH"]["node_list"].insert("end", f"Name                 | Letztes RX")
+            
             if nodes:
                 for node_id, node_data in nodes.items():
                     user = node_data.get('user', {})
                     long_name = user.get('longName', 'Unbekannt')
                     hex_id = user.get('id', 'Unbekannt')
-                    # Zeitstempel des letzten Kontakts (Last Heard)
+                    
                     last_heard_raw = node_data.get('lastHeard')
+                    
                     if last_heard_raw:
-                        #last_heard = datetime.datetime.utcfromtimestamp(last_heard_raw).strftime('%d.%m %H:%M')
                         last_heard = self.formatted_utc_timestamp(timestamp=last_heard_raw)
+                        ago = self.ago_rx(last_heard_raw)
                     else:
                         last_heard = "Nie"
-                    # Signalqualität (SNR) - wie gut hörst du den anderen?
+                        ago = self.ago_rx(last_heard_raw)
+                        
                     snr = node_data.get('snr', 'N/A')
-                    self.log_list.insert(0, f"{self.utc_time_str()} : Mesh {long_name} (ID: {hex_id}), Last Heard: {last_heard}, SNR: {snr}")
-                    self.digi_terminals["LORA_MESH"]["node_list"].insert("end", f"{long_name:<20} | {hex_id:<12} | {last_heard:<20} | {snr}")
+                    
+                    # Das Session-Log im Hintergrund behält natürlich alle Infos!
+                    self.log_list.insert(0, f"{self.utc_time_str()} : Mesh {long_name} (ID: {hex_id}), Last Heard: {last_heard}")
+                    
+                    # --- HIER DIE SCHLANKE ANZEIGE ---
+                    # Nur noch Name und Zeitstempel in der Listbox anzeigen
+                    self.digi_terminals["LORA_MESH"]["node_list"].insert("end", f"{long_name:<20} | {ago} | ID: {hex_id}")
+                    
             self.root.after(180000, self.mesh_my_heard) # Alle 3 Minuten aktualisieren
         except Exception as e:
-            print(f"Fehler: {e}")
-    def on_receive(self, packet, interface): # <--- MESH Wird aufgerufen, wenn ein neues Paket im Mesh ankommt, und verarbeitet es je nach Inhalt (Textnachricht, Position, Telemetrie), zeigt es im Monitor an, übersetzt die Sender-ID in einen Namen, wenn möglich, und aktualisiert die APRS-Position, wenn es eine Positionsmeldung ist
+            print(f"Fehler bei mesh_my_heard: {e}")
+
+    def on_mheard_double_click(self, event): # <--- Wird aufgerufen bei Doppelklick auf einen Eintrag in der Node-Liste
+        try:
+            widget = event.widget
+            selection = widget.curselection() # Holt den Index der ausgewählten Zeile (z.B. 0, 1, 2...)
+            
+            if not selection:
+                return
+                
+            index = selection[0]
+            selected_text = widget.get(index) # Holt den echten Text aus der Zeile
+            
+            print(f"[Node-Klick] Doppelklick auf Eintrag: '{selected_text}'")
+            
+            # --- ID AUS DEM TEXT EXTRAHIEREN ---
+            # Je nachdem, wie du die Zeilen in die Liste schreibst, müssen wir die ID isolieren.
+            # Fall 1: Wenn du nur die rohe ID oder das Rufzeichen reinschreibst, das direkt in der Node-DB existiert:
+            node_id = selected_text.strip()
+            
+            # Fall 2 (Sicherheitsnetz): Falls in der Liste "Name (ID: 12345)" steht, 
+            # filtern wir die Zahl heraus. Wenn deine Liste nur aus IDs/Namen besteht, kannst du das anpassen:
+            if "ID:" in selected_text:
+                # Schneidet alles zwischen "ID: " und ")" aus
+                node_id = selected_text.split("ID:")[-1].replace(")", "").strip()
+
+            # Jetzt rufen wir deine universelle DM-Fenster-Funktion auf!
+            # packet bleibt None, weil wir ja aktiv den Chat öffnen wollen!
+            self.rx_mesh_direct(packet=None, direct_node_id=node_id)
+            
+        except Exception as e:
+            print(f"[Node-Klick] Fehler beim Verarbeiten des Doppelklicks: {e}")
+
+    def on_mesh_receive(self, packet, interface): # <--- MESH Wird aufgerufen, wenn ein neues Paket im Mesh ankommt, und verarbeitet es je nach Inhalt (Textnachricht, Position, Telemetrie), zeigt es im Monitor an, übersetzt die Sender-ID in einen Namen, wenn möglich, und aktualisiert die APRS-Position, wenn es eine Positionsmeldung ist
         sender_id = packet.get('fromId')
         user_info = {}
         # --- SENDER-ID IN NAME ÜBERSETZEN ---
@@ -4395,23 +4708,60 @@ class NoFuSTX:
         else:
             # Falls der Node brandneu ist und noch nicht in der Liste war
             sender_name = f"ID: {sender_id}"
+            
         decoded = packet.get('decoded', {})
         portnum = decoded.get('portnum') # Was für eine Art von Daten?
+        my_node_id = self.interface.getMyNodeInfo().get("num") if self.interface else None
+        to_id = packet.get('toId', "Unknown")
         self.digi_terminals["LORA_MESH"]["monitor"].insert("end", f"Empfangenes Paket: {packet}\n")
         self.digi_terminals["LORA_MESH"]["monitor"].see("end")
         #self.write_session_log(f"[{self.utc_iso_timestamp()}] Empfangenes Paket: {packet}")
         self.insert_with_limit(self.digi_terminals["LORA_MESH"]["monitor"], packet, max_lines=150)
+        
         if portnum == "TEXT_MESSAGE_APP":
-            kanal_nummer = packet.get("channel", 0)
-            kanal_name = self.mesh_channels_dict.get(kanal_nummer, f"Kanal {kanal_nummer}")
-            # Entwicklungs Debug print(f"[Mesh] Kanalname = {kanal_name}")
-            msg = decoded.get('text')
-            # Hier der schöne Insert mit Namen statt kryptischer ID
-            self.digi_terminals["LORA_MESH"]["receive"].insert(
-                "end", 
-                f"[{self.utc_time_str()}] {sender_name} | Kanal: {kanal_name}:\n{msg}\n"
-            )
-            self.digi_terminals["LORA_MESH"]["receive"].see("end")
+            # --- DEBUG PRINTS FÜR DICH IM TERMINAL ---
+            print(f"[Mesh-Weiche] Meine Node-ID (Typ: {type(my_node_id)}): {my_node_id}")
+            print(f"[Mesh-Weiche] Empfänger toId (Typ: {type(to_id)}): {to_id}")
+            print(f"[Mesh-Weiche] Paket-Empfänger 'to' (Typ: {type(packet.get('to'))}): {packet.get('to')}")
+
+            # Wir wandeln alles in Strings um, um "int vs string" Fehler komplett zu eliminieren!
+            my_id_str = str(my_node_id) if my_node_id is not None else ""
+            to_id_str = str(to_id)
+            packet_to_str = str(packet.get('to', ''))
+
+            # --- DIE ROBUSTE DM-PRÜFUNG ---
+            # Eine DM liegt vor, wenn die Empfänger-ID mit unserer ID übereinstimmt 
+            # UND es kein Broadcast (4294967295) ist!
+            is_broadcast = (to_id_str == "4294967295" or to_id_str.upper() == "0XFFFFFFFF")
+            
+            if not is_broadcast and (to_id_str == my_id_str or packet_to_str == my_id_str):
+                print("[Mesh-Weiche] 🎯 TREFFER: Das ist eine Direktnachricht! Rufe rx_mesh_direct auf.")
+                self.rx_mesh_direct(packet)
+            else:
+                print(f"[Mesh-Weiche] 📡 Kanal-Nachricht. Geht an Kanal-Index: {packet.get('channel', 0)}")
+                # 1. Die Kanalnummer direkt aus dem empfangenen Paket holen
+                kanal_nummer = packet.get("channel", 0)
+                kanal_name = self.mesh_channels_dict.get(kanal_nummer, f"Kanal {kanal_nummer}")
+                
+                msg = decoded.get('text')
+                
+                # 2. Das RICHTIGE Text-Widget für diesen spezifischen Kanal ermitteln
+                if "receive_channels" in self.digi_terminals["LORA_MESH"]:
+                    target_recv = self.digi_terminals["LORA_MESH"]["receive_channels"].get(kanal_nummer)
+                else:
+                    target_recv = self.digi_terminals["LORA_MESH"].get("receive")
+                    
+                if not target_recv:
+                    target_recv = self.digi_terminals["LORA_MESH"].get("receive")
+                    
+                # 3. Den Text in den Kanal-Tab einfügen
+                if target_recv:
+                    target_recv.insert(
+                        "end", 
+                        f"[{self.utc_time_str()}] {sender_name}:\n{msg}\n"
+                    )
+                    target_recv.see("end")
+                
         # Wenn es eine Position ist:
         elif portnum == "POSITION_APP":
             pos = decoded.get('position', {})
@@ -4437,25 +4787,163 @@ class NoFuSTX:
                 })
             else:
                 print(f"POSITION_APP ohne Koordinaten: {pos}")
+                
         # Wenn es Telemetrie ist (Batterie etc.):
         elif portnum == "TELEMETRY_APP":
             tele = decoded.get('telemetry', {})
-    def receive_loop(self): # <--- Mesch empfangs schleife die in einem eigenen Thread läuft, um kontinuierlich Pakete zu empfangen und die on_receive-Funktion aufzurufen, ohne die GUI zu blockieren, und Fehler im Empfangsprozess abzufangen und im Monitor anzuzeigen
+    def rx_mesh_direct(self, packet=None, direct_node_id=None): # <--- Öffnet oder aktualisiert das DM-Fenster für eingehende DMs ODER Doppelklick
+        # Thread-Sicherheit für Tkinter garantieren (Wechsel in den Haupt-Thread)
+        if threading.current_thread() != threading.main_thread():
+            self.root.after(0, lambda: self.rx_mesh_direct(packet, direct_node_id))
+            return
+
+        try:
+            # --- 1. ABSENDER & TEXT ERMITTELN ---
+            if packet is not None:
+                sender_id = str(packet.get('fromId'))
+                decoded = packet.get('decoded', {})
+                msg = decoded.get('text', '[Kein Text]')
+            elif direct_node_id is not None:
+                sender_id = str(direct_node_id)
+                msg = None # Nur Tab öffnen, kein neuer Text
+            else:
+                return
+
+            # Namen aus deiner Node-DB holen
+            sender_name = "Unbekannt"
+            mesh_iface = cast(Any, self.interface)
+            nodes = getattr(mesh_iface, "nodes", None) or {}
+            if nodes and sender_id in nodes:
+                user_info = nodes[sender_id].get('user', {})
+                sender_name = user_info.get('longName', user_info.get('shortName', sender_id))
+            else:
+                sender_name = f"ID: {sender_id}"
+
+            # --- 2. PRÜFEN OB FENSTER EXISTIERT (WASSERDICHT) ---
+            window_needs_init = False
+            if self.dm_window is None:
+                window_needs_init = True
+            else:
+                try:
+                    if not self.dm_window.winfo_exists():
+                        window_needs_init = True
+                except Exception:
+                    window_needs_init = True
+
+            # Wenn das Fenster nicht existiert oder geschlossen war, komplett neu aufbauen
+            if window_needs_init:
+                self.dm_window = tk.Toplevel(self.root)
+                self.dm_window.title("🔐 NoFuSTX — Direktnachrichten (Privat)")
+                self.dm_window.configure(bg="#001100")
+                self.dm_window.geometry("500x400") # Platz für Eingabefelder
+                
+                try:
+                    dm_icon = tk.PhotoImage(file="icons/settings.png") 
+                    self.dm_window.iconphoto(False, dm_icon)
+                    self.dm_window._icon_ref = dm_icon # type: ignore
+                except Exception:
+                    pass
+
+                # Beim Schließen alles sauber zurücksetzen
+                def on_close_dm():
+                    self.dm_tabs.clear()
+                    self.dm_notebook = None
+                    if self.dm_window:
+                        self.dm_window.destroy()
+                    self.dm_window = None
+                
+                self.dm_window.protocol("WM_DELETE_WINDOW", on_close_dm)
+
+                # Notebook ERST HIER erstellen, wenn das Fenster frisch gebaut wird!
+                self.dm_notebook = ttk.Notebook(self.dm_window)
+                self.dm_notebook.pack(fill="both", expand=True, padx=5, pady=5)
+
+            # Bring das Fenster nach vorne
+            if self.dm_window:
+                self.dm_window.attributes("-topmost", True)
+                self.dm_window.attributes("-topmost", False)
+
+            # --- 3. NEUEN TAB ERSTELLEN, FALLS NOCH NICHT VORHANDEN ---
+            if sender_id not in self.dm_tabs and self.dm_notebook is not None:
+                tab_frame = tk.Frame(self.dm_notebook, bg="#001100")
+                
+                # Das große Textfeld für den Verlauf
+                txt_area = tk.Text(
+                    tab_frame, bg="#001a00", fg="#00FF00", height=12,
+                    insertbackground="#00FF00", font=("Courier", 10), bd=2, relief="sunken", wrap="word"
+                )
+                txt_area.pack(fill="both", expand=True, padx=5, pady=5)
+                
+                # === NEU: ALTEN VERLAUF AUS DEM SPEICHER LADEN ===
+                if sender_id in self.mesh_dm_history:
+                    txt_area.insert("1.0", self.mesh_dm_history[sender_id])
+                
+                txt_area.config(state="disabled") # Erst nach dem Laden sperren!
+                
+                # =============================================================
+                # VORBEREITUNG ZUM ANTWORTEN
+                # =============================================================
+                reply_frame = tk.Frame(tab_frame, bg="#001100")
+                reply_frame.pack(fill="x", padx=5, pady=5)
+                
+                entry_reply = ttk.Entry(reply_frame)
+                entry_reply.pack(side="left", fill="x", expand=True, padx=(0, 5))
+                
+                btn_send = ttk.Button(
+                    reply_frame, 
+                    text="Senden", 
+                    command=lambda s_id=sender_id, ent=entry_reply: self.send_mesh_direct(s_id, ent)
+                )
+                btn_send.pack(side="right")
+                
+                # Enter-Taste bind
+                entry_reply.bind("<Return>", lambda event, s_id=sender_id, ent=entry_reply: self.send_mesh_direct(s_id, ent))
+                # =============================================================
+
+                self.dm_tabs[sender_id] = txt_area
+                self.dm_notebook.add(tab_frame, text=f" {sender_name} ")
+
+            # --- 4. TEXT NUR EINFÜGEN, WENN EINE NACHRICHT MITKAM ---
+            if msg is not None:
+                formatted_msg = f"[{self.utc_time_str()}] 📥 {sender_name}:\n{msg}\n\n"
+                
+                # 1. In der globalen History speichern (fürs nächste Mal)
+                if sender_id not in self.mesh_dm_history:
+                    self.mesh_dm_history[sender_id] = ""
+                self.mesh_dm_history[sender_id] += formatted_msg
+                
+                # 2. Im aktuell offenen Widget anzeigen (falls das Fenster offen ist)
+                if sender_id in self.dm_tabs:
+                    target_text_widget = self.dm_tabs[sender_id]
+                    target_text_widget.config(state="normal")
+                    target_text_widget.insert("end", formatted_msg)
+                    target_text_widget.config(state="disabled")
+                    target_text_widget.see("end")
+
+            # --- 5. FOKUS AUF DEN GEWÄHLTEN TAB LENKEN ---
+            if self.dm_notebook and sender_id in self.dm_tabs:
+                tab_frame_to_select = self.dm_tabs[sender_id].master
+                self.dm_notebook.select(tab_frame_to_select)
+
+        except Exception as e:
+            print(f"[Mesh-DM] Fehler im DM-Tab-Manager: {e}")
+
+    def mesh_receive_loop(self): # <--- Mesch empfangs schleife die in einem eigenen Thread läuft, um kontinuierlich Pakete zu empfangen und die on_mesh_receive-Funktion aufzurufen, ohne die GUI zu blockieren, und Fehler im Empfangsprozess abzufangen und im Monitor anzuzeigen
         mesh_iface = cast(Any, self.interface)
         if not mesh_iface or not hasattr(mesh_iface, "stream_packets"):
             return
         try:
             for packet in mesh_iface.stream_packets():
-                self.on_receive(packet, self.interface)
+                self.on_mesh_receive(packet, self.interface)
         except Exception as e:
             print(f"[Mesh] Fehler im Empfangs-Loop: {e}")
-    def start_monitor_thread(self): # <--- Startet den Monitorthread für Mesh
+    def start_mesh_monitor_thread(self): # <--- Startet den Monitorthread für Mesh
         if not self.mesh_connected or not self.interface:
             return
         if not hasattr(self.interface, "stream_packets"):
             # Einige meshtastic-Versionen liefern empfangene Pakete über pubsub statt über stream_packets
             return
-        t = threading.Thread(target=self.receive_loop, daemon=True)
+        t = threading.Thread(target=self.mesh_receive_loop, daemon=True)
         t.start()
     def on_digimode_send_enter(self, event): # <--- Wenn Enter gedrückt wird in einem Digimode Sende den Text
         """Sendet Text direkt aus einem Digimode-Entry-Feld."""
@@ -4473,44 +4961,139 @@ class NoFuSTX:
                 receive.insert("end", f"[{self.utc_time_str()}] {self.config.get('USERCALL',{}).get('CALLSINGEN', 'N0CALL')} via {mode}:\n{msg_text}\n")
                 receive.see("end")
         widget.delete(0, "end")
+    def send_mesh_direct(self, s_id, ent): # <--- Sendet die getippte DM ins Mesh raus
+        # 1. Den geschriebenen Text aus dem Eingabefeld (ent) holen und Leerzeichen abschneiden
+        text_to_send = ent.get().strip()
+        if not text_to_send:
+            return # Leere Nachrichten senden wir erst gar nicht
+            
+        try:
+            print(f"[Mesh-TX] Sende Privatnachricht an {s_id}: {text_to_send}")
+            
+            if self.interface:
+                self.interface.sendText(text_to_send, destinationId=s_id)
+            else:
+                raise Exception("Meshtastic-Interface ist nicht initialisiert!")
+            
+            # Text für die History formatieren
+            formatted_tx = f"[{self.utc_time_str()}] 📤 Du:\n{text_to_send}\n\n"
+            
+            # 1. In der globalen History speichern
+            if s_id not in self.mesh_dm_history:
+                self.mesh_dm_history[s_id] = ""
+            self.mesh_dm_history[s_id] += formatted_tx
+            
+            # 2. Im offenen Chatfenster anzeigen
+            if s_id in self.dm_tabs:
+                target_text_widget = self.dm_tabs[s_id]
+                target_text_widget.config(state="normal")
+                target_text_widget.insert("end", formatted_tx)
+                target_text_widget.config(state="disabled")
+                target_text_widget.see("end")
+            
+            ent.delete(0, "end")
+            
+        except Exception as e:
+            print(f"[Mesh-TX] ❌ Fehler beim Senden der DM: {e}")
+            # Kleines visuelles Feedback im Chatfenster bei Fehlern (z.B. Node außer Reichweite/Interface weg)
+            if s_id in self.dm_tabs:
+                target_text_widget = self.dm_tabs[s_id]
+                target_text_widget.config(state="normal")
+                target_text_widget.insert("end", f"[SYSTEM] ⚠️ Senden fehlgeschlagen!\nFehler: {e}\n\n")
+                target_text_widget.config(state="disabled")
     def on_mesh_send_enter(self, event): # <--- Wird aufgerufen, wenn im Entry-Feld ENTER gedrückt wird
         """Wird aufgerufen, wenn im Entry-Feld ENTER gedrückt wird."""
         if not self.mesh_connected or not self.interface:
             print("[Mesh] Senden nicht möglich: Keine Hardware verbunden.")
             return
+            
         widget = event.widget
         # Bei tk.Entry holt ein einfaches .get() den kompletten Text!
         msg_text = widget.get().strip()
+        ch_id = 0
         if msg_text:
             try:
-                # Text per Meshtastic senden
+                # 1. Die Kanal-ID aus dem Widget auslesen, in dem ENTER gedrückt wurde (Fallback 0)
+                ch_id = getattr(widget, "_mesh_channel_id", 0)
+                
+                # Text per Meshtastic senden – JETZT MIT DEM RICHTIGEN KANAL!
                 mesh_iface = cast(Any, self.interface)
-                mesh_iface.sendText(msg_text)
-                # Lokale Chat-Anzeige befüllen
-                self.digi_terminals["LORA_MESH"]["receive"].insert(
-                    "end", 
-                    f"[{self.utc_time_str()}] - {self.config.get('USERCALL',{}).get('CALLSINGEN', 'N0CALL')}\n{msg_text}\n"
-                )
-                self.digi_terminals["LORA_MESH"]["receive"].see("end")
-                # Im Monitor mitloggen
+                mesh_iface.sendText(msg_text, channelIndex=ch_id) # <--- WICHTIG für Kanaltrennung auf HF!
+                
+                # 2. Das RICHTIGE Text-Widget für diesen spezifischen Kanal aus dem Dictionary holen
+                # Falls wir im Monomodus sind (rx_mesh_ch_tab == 0), fallen wir auf "receive" zurück
+                if "receive_channels" in self.digi_terminals["LORA_MESH"]:
+                    target_recv = self.digi_terminals["LORA_MESH"]["receive_channels"].get(ch_id)
+                else:
+                    target_recv = self.digi_terminals["LORA_MESH"].get("receive")
+                
+                # Falls das Widget existiert, genau DORT hineinschreiben
+                if target_recv:
+                    target_recv.insert(
+                        "end", 
+                        f"[{self.utc_time_str()}] - {self.config.get('USERCALL',{}).get('CALLSINGEN', 'N0CALL')}\n{msg_text}\n"
+                    )
+                    target_recv.see("end")
+                    
+                # Im globalen Monitor wird natürlich trotzdem alles zentral mitgeloggt
                 self.digi_terminals["LORA_MESH"]["monitor"].insert(
                     "end", 
-                    f"[{self.utc_time_str()}] TX: {msg_text}\n"
+                    f"[{self.utc_time_str()}] TX (CH {ch_id}): {msg_text}\n"
                 )
                 self.digi_terminals["LORA_MESH"]["monitor"].see("end")
+                
                 # Bei tk.Entry löscht man von Index 0 bis zum bitteren Ende ("end")
                 widget.delete(0, "end")
+                
             except Exception as e:
-                print(f"[Mesh] Fehler beim Senden: {e}")
+                print(f"[Mesh] Fehler beim Senden auf Kanal {ch_id}: {e}")
                 self.digi_terminals["LORA_MESH"]["monitor"].insert(
                     "end", 
-                    f"[{self.utc_time_str()}] ❌ Sende-Fehler: {e}\n"
+                    f"[{self.utc_time_str()}] ❌ Sende-Fehler (CH {ch_id}): {e}\n"
                 )
                 self.digi_terminals["LORA_MESH"]["monitor"].see("end")
     def iaru_mesh_send_msg(self, msg): # <--- wird aufgerufen wenn via Mesh eine IARU mitteilung gesendet werden soll
         if not self.mesh_connected or not self.interface:
             print("[Mesh] Senden nicht möglich: Keine Hardware verbunden.")
             return
+            
+        # --- SCHLANKE KANALAUSWAHL DIREKT AM ANFANG ---
+        channel_id = 0 # Standard-Kanal (PRIMARY)
+        channels = getattr(self, "mesh_channels_dict", {})
+        
+        # Nur wenn wir wirklich MEHR als einen Kanal haben, fragen wir nach
+        if len(channels) > 1:
+            # Eine kleine Variable, die wir im Fenster verändern können
+            choice_var = tk.IntVar(value=0)
+            
+            # Mini-Fenster aufbauen
+            dialog = tk.Toplevel(self.root)
+            dialog.title("Kanal?")
+            dialog.configure(bg="#001100")
+            dialog.geometry("250x180")
+            dialog.transient(self.root)
+            dialog.grab_set()
+            
+            tk.Label(dialog, text="Kanal auswählen:", fg="#00FF00", bg="#001100", font=("Arial", 11, "bold")).pack(pady=10)
+            
+            # Radiobuttons für jeden Kanal zeichnen
+            for ch_index, ch_name in channels.items():
+                tk.Radiobutton(
+                    dialog, text=f"CH {ch_index}: {ch_name}", variable=choice_var, value=ch_index,
+                    bg="#001100", fg="#00FF00", selectcolor="#002200", activebackground="#001100", activeforeground="#00FF00"
+                ).pack(anchor="w", padx=30, pady=2)
+                
+            # OK-Button schließt nur das Fenster, die Variable bleibt im Speicher!
+            tk.Button(
+                dialog, text=" OK ", bg="#003300", fg="#00FF00", font=("Arial", 10, "bold"),
+                command=dialog.destroy
+            ).pack(pady=15)
+            
+            # WICHTIG: Hier warten wir, bis das Fenster geschlossen wurde, bevor der Code weitergeht!
+            self.root.wait_window(dialog)
+            channel_id = choice_var.get() # Die getroffene Auswahl übernehmen
+        # ----------------------------------------------
+
         try:
             # 1. Text bereinigen (Damit Zeilenumbrüche die Chunks nicht verfälschen)
             clean_msg = msg.replace("\n", " ").replace("Ä", "Ae").replace("Ö", "Oe").replace("Ü", "Ue")
@@ -4532,6 +5115,19 @@ class NoFuSTX:
             # Temporär auf das Routing-Signal von Meshtastic lauschen
             if pub is not None:
                 pub.subscribe(on_ack_received, "meshtastic.receive.routing")
+                
+            # --- HIER DEN INSERTS-PFAD ANPASSEN ---
+            # Wir holen das passende Textfeld aus deinen neuen Kanaltabs.
+            # Falls es das Dictionary nicht gibt, fallen wir sauber auf das alte "receive" zurück.
+            if "receive_channels" in self.digi_terminals["LORA_MESH"]:
+                target_recv = self.digi_terminals["LORA_MESH"]["receive_channels"].get(channel_id)
+            else:
+                target_recv = self.digi_terminals["LORA_MESH"].get("receive")
+                
+            if not target_recv:
+                target_recv = self.digi_terminals["LORA_MESH"].get("receive")
+            # --------------------------------------
+
             for index, chunk in enumerate(chunks):
                 formatted_chunk = chunk
                 if total_chunks > 1:
@@ -4539,18 +5135,25 @@ class NoFuSTX:
                 # Sende-Flag für diesen Durchlauf zurücksetzen
                 self.mesh_ready_for_next = False
                 print(f"[Mesh] Übergebe Teil {index+1}/{total_chunks} an Mesh...")
-                # Nachricht absenden
+                
+                # Nachricht absenden – JETZT MIT DEM DYNAMISCH GEWÄHLTEN KANAL!
                 mesh_iface = cast(Any, self.interface)
-                mesh_iface.sendText(formatted_chunk)
+                mesh_iface.sendText(formatted_chunk, channelIndex=channel_id) # <--- Kanal-Index übergeben
+                
                 # Lokale GUI-Einträge befüllen
                 self.digi_terminals["LORA_MESH"]["monitor"].insert(
-                    "end", f"[{self.utc_time_str()}] TX ({index+1}/{total_chunks}): {chunk}\n"
+                    "end", f"[{self.utc_time_str()}] TX ({index+1}/{total_chunks}) [CH {channel_id}]: {chunk}\n"
                 )
-                self.digi_terminals["LORA_MESH"]["receive"].insert(
-                    "end", f"[{self.utc_time_str()}] - {self.config.get('USERCALL',{}).get('CALLSINGEN', 'N0CALL')}\n{formatted_chunk}\n"
-                )
+                
+                # Schreibt es exakt in den richtigen Tab!
+                if target_recv:
+                    target_recv.insert(
+                        "end", f"[{self.utc_time_str()}] - {self.config.get('USERCALL',{}).get('CALLSINGEN', 'N0CALL')}\n{formatted_chunk}\n"
+                    )
                 self.digi_terminals["LORA_MESH"]["monitor"].see("end")
-                self.digi_terminals["LORA_MESH"]["receive"].see("end")
+                if target_recv:
+                    target_recv.see("end")
+                    
                 # --- WARTEN AUF HARDWARE-BEREITSCHAFT ---
                 if total_chunks > 1:
                     start_wait = time.time()
@@ -4562,9 +5165,6 @@ class NoFuSTX:
                             print(f"[Mesh] ⚠️ Kein ACK erhalten für Teil {index+1}, fahre aus Sicherheitsgründen fort...")
                             break
                 # --- DAS GEHEIMNIS GEGEN DEN PAKETVERLUST ---
-                # Egal ob das ACK kam oder das Timeout gegriffen hat: Wir zwingen Python 
-                # zu einer echten Pause von 3 Sekunden, damit der serielle Puffer im USB-Chip 
-                # der Hardware absolut leergeschrieben ist, bevor der nächste Chunk reinkommt!
                 if total_chunks > 1:
                     for _ in range(6):
                         self.root.update()
@@ -4897,7 +5497,7 @@ class NoFuSTX:
                         log_counter += 1
                     except json.JSONDecodeError:
                         pass
-                time.sleep(10) # Alle 10 Sekunden prüfen cpu schonen
+                time.sleep(60) # Alle 10 Sekunden prüfen cpu schonen
         except serial.SerialException as e:  # type: ignore
             print(f"❌ Verbindung im laufenden Betrieb verloren: {e}")
             messagebox.showerror("Verbindungsfehler", f"Die Verbindung zum NoFuS-Spannungsmonitor wurde unterbrochen:\n{e}")
@@ -4989,7 +5589,7 @@ class NoFuSTX:
 
         try:
             # timeout=0.5 zwingt den Thread zum Schlafen, wenn keine Daten da sind (0% CPU!)
-            ser = serial.Serial(port=port, baudrate=baudrate, timeout=0.5)
+            ser = serial.Serial(port=port, baudrate=baudrate, timeout=0.5) # type: ignore
             self.active_hardware_connections[port] = ser
         except Exception as e:
             self.aprs_update_queue.put({
@@ -5060,7 +5660,21 @@ class NoFuSTX:
                 if port in self.active_hardware_connections:
                     del self.active_hardware_connections[port]
                 break
-            
+
+    def play_beep(self, frequenz=1100, dauer_ms=200): # <--- Erzeugt einen präzisen Systemton via ffplay (QBASIC-Style)
+        """Erzeugt einen Sinuston mit definierter Frequenz und Dauer."""
+        def _task():
+            # wandelt Millisekunden in Sekunden um
+            dauer_sek = dauer_ms / 1000.0
+            # Ein genialer ffmpeg-Befehl, der einen reinen Sinuston generiert
+            cmd = f"ffplay -f lavfi -i \"sine=frequency={frequenz}:duration={dauer_sek}\" -nodisp -autoexit -loglevel quiet"
+            try:
+                subprocess.run(cmd, shell=True)
+            except Exception as e:
+                print(f"[Beep-Fehler] ffplay konnte nicht piepen: {e}")
+
+        # Wir starten das in einem Thread, damit die UI während des Piep-Tons nicht einfriert!
+        threading.Thread(target=_task, daemon=True).start()        
 # ---------- MAIN ----------
 # Startet die Anwendung, indem die Hauptklasse instanziiert und die Tkinter-Hauptschleife gestartet wird.
 if __name__ == "__main__":
