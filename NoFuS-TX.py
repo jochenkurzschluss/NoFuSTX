@@ -2137,7 +2137,7 @@ class NoFuSTX:
         self.get_current_map_zoom()
     
     def no_sdr_found(self): # <--- Kein SDR Gefunden dann Anzeige im SDR Tab
-        label = tk.Label(self.tab_sdr, text="Kein SDR gefunden. Bitte überprüfen Sie die Verbindung und die Treiber.\nNach Anschluss oder geladenem Treiber Starten Sie das Programm erneut!", font=("Arial", 12), fg="red")
+        label = ttk.Label(self.tab_sdr, text="Kein SDR gefunden. Bitte überprüfen Sie die Verbindung und die Treiber.\nNach Anschluss oder geladenem Treiber Starten Sie das Programm erneut!", font=("Arial", 12), foreground="red")
         label.pack(pady=20)
     def setup_weather_tab(self):
         # Einfacher Platzhalter-Text, damit der Tab nicht leer ist
@@ -2957,7 +2957,6 @@ class NoFuSTX:
         except Exception as e:
             print(f"[Map] Fehler beim Zentrieren: {e}")
         
-        
     def manual_tile_save(self): # <--- Manueles speichern der Karten tiles in der offline_tiles.db
         """Startet den Offline-Download in einem Hintergrund-Thread."""
         db_path = os.path.join(base_path, "off_Maps", "offline_tiles.db")
@@ -3009,7 +3008,7 @@ class NoFuSTX:
         for w in self.tab_fundus.winfo_children():
             w.destroy()
 
-        lbl = tk.Label(
+        lbl = ttk.Label(
             self.tab_fundus,
             text="Einheitenübersicht & Personal (Fundus)",
             font=("Arial", 12, "bold"),
@@ -3151,7 +3150,7 @@ class NoFuSTX:
 
         for i, title in enumerate(titles):
             header_f.columnconfigure(i, weight=1)
-            tk.Label(header_f, text=title).grid(row=0, column=i, padx=5, sticky="w")
+            ttk.Label(header_f, text=title).grid(row=0, column=i, padx=5, sticky="w")
             
             if title == "Zeit (UTC)":
                 # Container für Feld + Checkbox
@@ -3164,7 +3163,7 @@ class NoFuSTX:
                 self.msg_fields[title] = ent
 
                 self.auto_time_var = tk.BooleanVar(value=True)
-                cb = tk.Checkbutton(time_container, text="Auto", variable=self.auto_time_var)
+                cb = ttk.Checkbutton(time_container, text="Auto", variable=self.auto_time_var)
                 cb.grid(row=0, column=1, padx=(0, 5))
             else:
                 ent = ttk.Entry(header_f)
@@ -3265,7 +3264,7 @@ class NoFuSTX:
         self.print_on_send = tk.BooleanVar(
             value=self.config.get("PRINTER", {}).get("auto_print", False)
         )
-        tk.Checkbutton(
+        ttk.Checkbutton(
             control_f, text="Beim Senden drucken", variable=self.print_on_send
         ).grid(row=0, column=2, padx=10, sticky="w")
 
@@ -3370,23 +3369,45 @@ class NoFuSTX:
         ttk.Label(gui_f, text="Oberfläche und Hintergrundfunktionen").pack()
         
         d_gui = tk.BooleanVar(value=params.get("debug", False))
-        tk.Checkbutton(gui_f, text="Debugausgaben Anzeigen", variable=d_gui).pack(pady=10)
+        ttk.Checkbutton(gui_f, text="Debugausgaben Anzeigen", variable=d_gui).pack(pady=10)
         self.temp_entries["GUI"]["debug"] = d_gui
 
         e_gui = tk.BooleanVar(value=params.get("equip_check", False))
-        tk.Checkbutton(gui_f, text="Equipmentprüfung Beim Start", variable=e_gui).pack(pady=10)
+        ttk.Checkbutton(gui_f, text="Equipmentprüfung Beim Start", variable=e_gui).pack(pady=10)
         self.temp_entries["GUI"]["equip_check"] = e_gui
 
         i_gui = tk.BooleanVar(value=params.get("if_mesh_gps", False))
-        tk.Checkbutton(gui_f, text="Wenn MeshGPS Home-Automatisieren", variable=i_gui).pack(pady=10)
+        ttk.Checkbutton(gui_f, text="Wenn MeshGPS Home-Automatisieren", variable=i_gui).pack(pady=10)
         self.temp_entries["GUI"]["if_mesh_gps"] = i_gui
 
         c_gui = ttk.Button(gui_f, text="Rufzeichen Neu Setzen", command=self.set_USERCALL)
         c_gui.pack(pady=10)
 
         v_gui = tk.BooleanVar(value=params.get("voltmeter", False))
-        tk.Checkbutton(gui_f, text="Voltmeter des Koffers", variable=v_gui).pack(pady=10)
+        ttk.Checkbutton(gui_f, text="Voltmeter des Koffers", variable=v_gui).pack(pady=10)
         self.temp_entries["GUI"]["voltmeter"] = v_gui
+        #GUI-MAP
+        self.temp_entries["MAP"] = {}
+        ttk.Label(gui_f, text="Karten Eigenschaften").pack()
+        # --- zoom ---
+        ttk.Label(gui_f, text="- Karten Zoom -").pack()
+        map_gui = tk.Entry(gui_f)
+        map_gui.insert(0, str(self.config.get("MAP", {}).get("zoom","11")))
+        map_gui.pack(pady=2)
+        self.temp_entries["MAP"]["zoom"] = map_gui
+        # --- LAT ---
+        ttk.Label(gui_f, text="- Karten Position LAT -").pack()
+        map_gui = tk.Entry(gui_f)
+        map_gui.insert(0, str(self.config.get("MAP", {}).get("center_lat")))
+        map_gui.pack(pady=2)
+        self.temp_entries["MAP"]["center_lat"] = map_gui
+        # --- LON ---
+        ttk.Label(gui_f, text="- Karten Position LON -").pack()
+        map_gui = tk.Entry(gui_f)
+        map_gui.insert(0, str(self.config.get("MAP", {}).get("center_lon")))
+        map_gui.pack(pady=2)
+        self.temp_entries["MAP"]["center_lon"] = map_gui
+
 
         # JS8Call
         js8_f = ttk.Frame(nb)
@@ -3394,27 +3415,27 @@ class NoFuSTX:
         params = self.config["MODES"]["JS8CALL"]
         self.temp_entries["JS8CALL"] = {}
         v = tk.BooleanVar(value=params.get("active", False))
-        tk.Checkbutton(js8_f, text="JS8Call Aktiv", variable=v).pack(pady=10)
+        ttk.Checkbutton(js8_f, text="JS8Call Aktiv", variable=v).pack(pady=10)
         self.temp_entries["JS8CALL"]["active"] = v
-        tk.Label(js8_f, text="FREQUENCY:").pack()
+        ttk.Label(js8_f, text="FREQUENCY:").pack()
         freq_ent = ttk.Entry(js8_f)
         freq_ent.insert(0, str(params.get("frequency", "7.078 MHz")))
         freq_ent.pack(pady=2)
         self.temp_entries["JS8CALL"]["frequency"] = freq_ent
         f_use = tk.BooleanVar(value=params.get("use_fldigi", True))
-        tk.Checkbutton(js8_f, text="FLDIGI-Sendepfad aktiv", variable=f_use).pack(pady=5)
+        ttk.Checkbutton(js8_f, text="FLDIGI-Sendepfad aktiv", variable=f_use).pack(pady=5)
         self.temp_entries["JS8CALL"]["use_fldigi"] = f_use
         fldigi_modem = ttk.Entry(js8_f)
         fldigi_modem.insert(0, str(params.get("fldigi_modem", "BPSK31")))
-        tk.Label(js8_f, text="FLDIGI-Modem:").pack(pady=2)
+        ttk.Label(js8_f, text="FLDIGI-Modem:").pack(pady=2)
         fldigi_modem.pack(pady=2)
         self.temp_entries["JS8CALL"]["fldigi_modem"] = fldigi_modem
-        tk.Label(js8_f, text="CALLSIGN:").pack()
+        ttk.Label(js8_f, text="CALLSIGN:").pack()
         call_ent = ttk.Entry(js8_f)
         call_ent.insert(0, str(self.config.get("USERCALL", {}).get("CALLSINGEN", "NOCALL")))
         call_ent.pack(pady=2)
         self.temp_entries["JS8CALL"]["callsign"] = call_ent
-        tk.Label(js8_f, text="SOUNDCARD:").pack()
+        ttk.Label(js8_f, text="SOUNDCARD:").pack()
         sc_cb = ttk.Combobox(js8_f, values=["System", "USB Codec", "Virtual"])
         sc_cb.set(params.get("soundcard", "System"))
         sc_cb.pack(pady=2)
@@ -3425,27 +3446,27 @@ class NoFuSTX:
         params = self.config["MODES"]["VARA"]
         self.temp_entries["VARA"] = {}
         v = tk.BooleanVar(value=params.get("active", False))
-        tk.Checkbutton(vara_f, text="VARA Aktiv", variable=v).pack(pady=10)
+        ttk.Checkbutton(vara_f, text="VARA Aktiv", variable=v).pack(pady=10)
         self.temp_entries["VARA"]["active"] = v
-        tk.Label(vara_f, text="FREQUENCY:").pack()
+        ttk.Label(vara_f, text="FREQUENCY:").pack()
         freq_ent = ttk.Entry(vara_f)
         freq_ent.insert(0, str(params.get("frequency", "14.105 MHz")))
         freq_ent.pack(pady=2)
         self.temp_entries["VARA"]["frequency"] = freq_ent
         f_use = tk.BooleanVar(value=params.get("use_fldigi", True))
-        tk.Checkbutton(vara_f, text="FLDIGI-Sendepfad aktiv", variable=f_use).pack(pady=5)
+        ttk.Checkbutton(vara_f, text="FLDIGI-Sendepfad aktiv", variable=f_use).pack(pady=5)
         self.temp_entries["VARA"]["use_fldigi"] = f_use
         fldigi_modem = ttk.Entry(vara_f)
         fldigi_modem.insert(0, str(params.get("fldigi_modem", "SSB")))
-        tk.Label(vara_f, text="FLDIGI-Modem:").pack(pady=2)
+        ttk.Label(vara_f, text="FLDIGI-Modem:").pack(pady=2)
         fldigi_modem.pack(pady=2)
         self.temp_entries["VARA"]["fldigi_modem"] = fldigi_modem
-        tk.Label(vara_f, text="CALLSIGN:").pack()
+        ttk.Label(vara_f, text="CALLSIGN:").pack()
         call_ent = ttk.Entry(vara_f)
         call_ent.insert(0, str(self.config.get("USERCALL", {}).get("CALLSINGEN", "NOCALL")))
         call_ent.pack(pady=2)
         self.temp_entries["VARA"]["callsign"] = call_ent
-        tk.Label(vara_f, text="SOUNDCARD:").pack()
+        ttk.Label(vara_f, text="SOUNDCARD:").pack()
         sc_cb = ttk.Combobox(vara_f, values=["System", "USB Codec", "Virtual"])
         sc_cb.set(params.get("soundcard", "System"))
         sc_cb.pack(pady=2)
@@ -3456,27 +3477,27 @@ class NoFuSTX:
         params = self.config["MODES"]["MT63"]
         self.temp_entries["MT63"] = {}
         v = tk.BooleanVar(value=params.get("active", False))
-        tk.Checkbutton(mt63_f, text="MT63 Aktiv", variable=v).pack(pady=10)
+        ttk.Checkbutton(mt63_f, text="MT63 Aktiv", variable=v).pack(pady=10)
         self.temp_entries["MT63"]["active"] = v
-        tk.Label(mt63_f, text="FREQUENCY:").pack()
+        ttk.Label(mt63_f, text="FREQUENCY:").pack()
         freq_ent = ttk.Entry(mt63_f)
         freq_ent.insert(0, str(params.get("frequency", "7.040 MHz")))
         freq_ent.pack(pady=2)
         self.temp_entries["MT63"]["frequency"] = freq_ent
         f_use = tk.BooleanVar(value=params.get("use_fldigi", True))
-        tk.Checkbutton(mt63_f, text="FLDIGI-Sendepfad aktiv", variable=f_use).pack(pady=5)
+        ttk.Checkbutton(mt63_f, text="FLDIGI-Sendepfad aktiv", variable=f_use).pack(pady=5)
         self.temp_entries["MT63"]["use_fldigi"] = f_use
         fldigi_modem = ttk.Entry(mt63_f)
         fldigi_modem.insert(0, str(params.get("fldigi_modem", "MT63-1KS")))
-        tk.Label(mt63_f, text="FLDIGI-Modem:").pack(pady=2)
+        ttk.Label(mt63_f, text="FLDIGI-Modem:").pack(pady=2)
         fldigi_modem.pack(pady=2)
         self.temp_entries["MT63"]["fldigi_modem"] = fldigi_modem
-        tk.Label(mt63_f, text="BANDWIDTH:").pack()
+        ttk.Label(mt63_f, text="BANDWIDTH:").pack()
         bw_cb = ttk.Combobox(mt63_f, values=["500Hz", "1k", "2k"])
         bw_cb.set(params.get("bandwidth", "1k"))
         bw_cb.pack(pady=2)
         self.temp_entries["MT63"]["bandwidth"] = bw_cb
-        tk.Label(mt63_f, text="SOUNDCARD:").pack()
+        ttk.Label(mt63_f, text="SOUNDCARD:").pack()
         sc_cb = ttk.Combobox(mt63_f, values=["System", "USB Codec", "Virtual"])
         sc_cb.set(params.get("soundcard", "System"))
         sc_cb.pack(pady=2)
@@ -3508,11 +3529,11 @@ class NoFuSTX:
                 
                 # Ist der Port An/Aus?!
                 v = tk.BooleanVar(value=port.get("active", False))
-                tk.Checkbutton(p_frame, text="Aktiv", variable=v).grid(row=0, column=0)
+                ttk.Checkbutton(p_frame, text="Aktiv", variable=v).grid(row=0, column=0)
                 
                 # Werden über dieses gerät auch APRS Frames empfangen ?
                 aprs = tk.BooleanVar(value=port.get("aprs", False)) # Kleiner Fix: port.get("aprs") statt "active"
-                tk.Checkbutton(p_frame, text="APRS", variable=aprs).grid(row=1, column=0, padx=5, pady=5)
+                ttk.Checkbutton(p_frame, text="APRS", variable=aprs).grid(row=1, column=0, padx=5, pady=5)
                 
                 # Hardwaretyp Festlegen
                 ttk.Label(p_frame, text="Hardwaretyp:").grid(row=0, column=1, padx=5)
@@ -3699,11 +3720,11 @@ class NoFuSTX:
         self.temp_entries["SDR"] = {}
         ttk.Label(sdr_f, text="SDR System:").pack(pady=5)
         v_sdr_active = tk.BooleanVar(value=self.config.get("SDR", {}).get("active", False))
-        tk.Checkbutton(sdr_f, text="SDR aktivieren", variable=v_sdr_active).pack(pady=10)
+        ttk.Checkbutton(sdr_f, text="SDR aktivieren", variable=v_sdr_active).pack(pady=10)
         self.temp_entries["SDR"]["active"] = v_sdr_active
         sdr_options = ["rtl_sdr", "gqrx", "none"]
         self.sdr_system = ttk.Combobox(sdr_f, values=sdr_options)
-        tk.Label(sdr_f, text="SDR Sample Rate (Hz):").pack(pady=5)
+        ttk.Label(sdr_f, text="SDR Sample Rate (Hz):").pack(pady=5)
         sdr_rate_f = ttk.Frame(sdr_f)
         sdr_rate_f.pack(pady=5, padx=10, fill="x")
         sdr_rate = ttk.Entry(sdr_rate_f)
@@ -3711,7 +3732,7 @@ class NoFuSTX:
         current_sdr_rate = self.config.get("SDR", {}).get("sdr_rate", "")
         sdr_rate.insert(0, current_sdr_rate)
         self.temp_entries["SDR"]["sdr_rate"] = sdr_rate
-        tk.Label(sdr_f, text="SDR Audio Rate (Hz):").pack(pady=5)
+        ttk.Label(sdr_f, text="SDR Audio Rate (Hz):").pack(pady=5)
         sdr_audio_rate_f = ttk.Frame(sdr_f)
         sdr_audio_rate_f.pack(pady=5, padx=10, fill="x")
         sdr_audio_rate = ttk.Entry(sdr_audio_rate_f)
@@ -3719,7 +3740,7 @@ class NoFuSTX:
         current_sdr_audio_rate = self.config.get("SDR", {}).get("audio_rate_sdr", "")
         sdr_audio_rate.insert(0, current_sdr_audio_rate)
         self.temp_entries["SDR"]["sdr_audio_rate"] = sdr_audio_rate
-        tk.Label(sdr_f, text="APLAY Audio Rate (Hz):").pack(pady=5)
+        ttk.Label(sdr_f, text="APLAY Audio Rate (Hz):").pack(pady=5)
         aplay_audio_f = ttk.Frame(sdr_f)
         aplay_audio_f.pack(pady=5, padx=10, fill="x")
         aplay_audio_rate = ttk.Entry(aplay_audio_f)
@@ -3749,7 +3770,7 @@ class NoFuSTX:
         self.prn_auto = tk.BooleanVar(
             value=self.config.get("PRINTER", {}).get("auto_print", False)
         )
-        tk.Checkbutton(pr_f, text="Auto-Print", variable=self.prn_auto).pack(pady=10)
+        ttk.Checkbutton(pr_f, text="Auto-Print", variable=self.prn_auto).pack(pady=10)
         # Weitere Modi (inkl. SSTV-Spezialfall), aber nur für Modi ohne eigene Tabs
         for mode, params in self.config["MODES"].items():
             if mode in ("AX25_PORTS", "JS8CALL", "VARA", "MT63"):  # Diese haben eigene Tabs
@@ -3760,57 +3781,57 @@ class NoFuSTX:
             if mode not in self.temp_entries:
                 self.temp_entries[mode] = {}
             v = tk.BooleanVar(value=params.get("active", False))
-            tk.Checkbutton(f, text=f"{mode} Aktiv", variable=v).pack(pady=10)
+            ttk.Checkbutton(f, text=f"{mode} Aktiv", variable=v).pack(pady=10)
             self.temp_entries[mode]["active"] = v
             if mode == "SSTV":
-                tk.Label(f, text="SSTV MODUS:").pack()
+                ttk.Label(f, text="SSTV MODUS:").pack()
                 ms = ttk.Combobox(f, values=self.options["SSTV_MODES"])
                 ms.set(params.get("mode", "Martin 1"))
                 ms.pack()
                 self.temp_entries[mode]["mode"] = ms
-                tk.Label(f, text="SOUNDKARTE:").pack()
+                ttk.Label(f, text="SOUNDKARTE:").pack()
                 ss = ttk.Combobox(f, values=["System", "USB Codec", "Virtual"])
                 ss.set(params.get("soundcard", "System"))
                 ss.pack()
                 self.temp_entries[mode]["soundcard"] = ss
                 f_use = tk.BooleanVar(value=params.get("use_fldigi", True))
-                tk.Checkbutton(f, text="FLDIGI-Sendepfad aktiv", variable=f_use).pack(pady=5)
+                ttk.Checkbutton(f, text="FLDIGI-Sendepfad aktiv", variable=f_use).pack(pady=5)
                 self.temp_entries[mode]["use_fldigi"] = f_use
                 fldigi_modem = ttk.Entry(f)
                 fldigi_modem.insert(0, str(params.get("fldigi_modem", "SSB")))
-                tk.Label(f, text="FLDIGI-Modem:").pack(pady=2)
+                ttk.Label(f, text="FLDIGI-Modem:").pack(pady=2)
                 fldigi_modem.pack(pady=2)
                 self.temp_entries[mode]["fldigi_modem"] = fldigi_modem
             elif mode == "RTTY":
                 # Spezielle RTTY-Konfiguration inkl. Soundkarte
-                tk.Label(f, text="BPS:").pack()
+                ttk.Label(f, text="BPS:").pack()
                 bps_cb = ttk.Combobox(f, values=self.options["RTTY_BPS"], width=10)
                 bps_cb.set(str(params.get("bps", "45.45")))
                 bps_cb.pack(pady=2)
                 self.temp_entries[mode]["bps"] = bps_cb
-                tk.Label(f, text="SHIFT (Hz):").pack()
+                ttk.Label(f, text="SHIFT (Hz):").pack()
                 shift_ent = ttk.Entry(f)
                 shift_ent.insert(0, str(params.get("shift", "170")))
                 shift_ent.pack(pady=2)
                 self.temp_entries[mode]["shift"] = shift_ent
-                tk.Label(f, text="SOUNDKARTE:").pack()
+                ttk.Label(f, text="SOUNDKARTE:").pack()
                 rtty_sc = ttk.Combobox(f, values=["System", "USB Codec", "Virtual"])
                 rtty_sc.set(params.get("soundcard", "System"))
                 rtty_sc.pack(pady=2)
                 self.temp_entries[mode]["soundcard"] = rtty_sc
                 f_use = tk.BooleanVar(value=params.get("use_fldigi", True))
-                tk.Checkbutton(f, text="FLDIGI-Sendepfad aktiv", variable=f_use).pack(pady=5)
+                ttk.Checkbutton(f, text="FLDIGI-Sendepfad aktiv", variable=f_use).pack(pady=5)
                 self.temp_entries[mode]["use_fldigi"] = f_use
                 fldigi_modem = ttk.Entry(f)
                 fldigi_modem.insert(0, str(params.get("fldigi_modem", "RTTY")))
-                tk.Label(f, text="FLDIGI-Modem:").pack(pady=2)
+                ttk.Label(f, text="FLDIGI-Modem:").pack(pady=2)
                 fldigi_modem.pack(pady=2)
                 self.temp_entries[mode]["fldigi_modem"] = fldigi_modem
             else:
                 for k, val in params.items():
                     if k == "active":
                         continue
-                    tk.Label(f, text=k.upper()).pack()
+                    ttk.Label(f, text=k.upper()).pack()
                     if k == "passcode":
                         ent = ttk.Entry(f, show="*")
                     else:
@@ -3869,6 +3890,11 @@ class NoFuSTX:
             "equip_check": self.temp_entries["GUI"]["equip_check"].get(),
             "if_mesh_gps": self.temp_entries["GUI"]["if_mesh_gps"].get(),
             "voltmeter": self.temp_entries["GUI"]["voltmeter"].get(),
+        }
+        self.config["MAP"] = {
+            "center_lat": self.temp_entries["MAP"]["center_lat"].get(),
+            "center_lon": self.temp_entries["MAP"]["center_lon"].get(),
+            "zoom": self.temp_entries["MAP"]["zoom"].get(),
         }
         # Modi übernehmen
         for m, entries in self.temp_entries.items():
@@ -4001,7 +4027,7 @@ class NoFuSTX:
                         
                         # Event-Binding bleibt gleich, wir hängen aber Infos ans Widget (siehe Tipp unten)
                         send.bind("<Return>", self.on_mesh_send_enter)
-                        send._mesh_channel_id = ch_index  # <--- Trick: Kanal-ID direkt ans Widget tackern!
+                        send._mesh_channel_id = ch_index  # <--- Trick: Kanal-ID direkt ans Widget tackern! # type: ignore
                         
                         # Im Dictionary einsortieren
                         self.digi_terminals[mode]["receive_channels"][ch_index] = recv
@@ -5218,10 +5244,16 @@ class NoFuSTX:
                 return
             self.mesh_home_auto_updated = True
             self.set_home_position_from_click((lat, lon))
+            # Auch in der Konfig ablegen
+            map_conf = self.config.setdefault("MAP", {})
+            map_conf["center_lat"] = float(lat)
+            map_conf["center_lon"] = float(lon)
+            self.save_settings()
             if hasattr(self, "log_list"):
                 try:
                     self.log_list.insert(0, f"[{self.utc_iso_timestamp()}] Mesh-GPS Home-Update: {lat:.6f}, {lon:.6f}")
                     self.write_session_log(f"[{self.utc_iso_timestamp()}] Mesh-GPS Home-Update: {lat:.6f}, {lon:.6f}")
+
                 except Exception:
                     pass
         except Exception:
