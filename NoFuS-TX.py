@@ -59,6 +59,7 @@ from tkinter import ttk, messagebox
 try:
     import tkintermapview   # Die Karten-Engine
     from tkintermapview.offline_loading import OfflineLoader
+    from tkintermapview import OfflineLoader
 except ImportError:
     tkintermapview = None
 try:
@@ -864,12 +865,21 @@ class NoFuSTX:
             self.root.update_idletasks()
 
             # Verbindung herstellen und zusammenführen
-            conn = sqlite3.connect(local_db)
-            conn.execute(f"ATTACH DATABASE '{temp_remote_db}' AS remote")
-            conn.execute("INSERT OR IGNORE INTO tiles SELECT * FROM remote.tiles")
-            conn.commit()
-            conn.execute("DETACH DATABASE remote")
-            conn.close()
+            try:
+                conn = sqlite3.connect(local_db)
+                print(f"[KARTEN-MERGE] Öffne DB {local_db}")
+                conn.execute(f"ATTACH DATABASE '{temp_remote_db}' AS remote")
+                print(f"[KARTEN-MERGE] ATTACH DB REmote {temp_remote_db}")
+                conn.execute("INSERT OR IGNORE INTO tiles SELECT * FROM remote.tiles")
+                print(f"[KARTEN-MERGE] INSERT DB")
+                conn.commit()
+                print(f"[KARTEN-MERGE] COMMIT DB")
+                conn.execute("DETACH DATABASE remote")
+                print(f"[KARTEN-MERGE] DETACH DB")
+                conn.close()
+                print(f"[KARTEN-MERGE] Schließe DB")
+            except Exception as fail:
+                print(f"[KARTEN-MERGE] Fehler beim merge: {fail}")
             
             print("[LAN-Sync] Kartenabgleich erfolgreich abgeschlossen!")
             messagebox.showinfo("Sync", "Karten erfolgreich abgeglichen!")
@@ -2881,6 +2891,57 @@ class NoFuSTX:
         os.makedirs(map_folder, exist_ok=True)
         db_path = os.path.join(map_folder, "offline_tiles.db")
 
+        # === HIER DIE DATENBANK STRUKTUR VORBEREITEN ===
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Server-Tabelle anlegen
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS server (
+                    url VARCHAR(300) PRIMARY KEY NOT NULL,
+                    max_zoom INTEGER NOT NULL
+                )
+            ''')
+            
+            # Sections-Tabelle anlegen
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS sections (
+                    position_a VARCHAR(100) NOT NULL,
+                    position_b VARCHAR(100) NOT NULL,
+                    zoom_a INTEGER NOT NULL,
+                    zoom_b INTEGER NOT NULL,
+                    server VARCHAR(300) NOT NULL,
+                    CONSTRAINT fk_server FOREIGN KEY (server) REFERENCES server (url),
+                    CONSTRAINT pk_tiles PRIMARY KEY (position_a, position_b, zoom_a, zoom_b, server)
+                )
+            ''')
+            
+            # Tiles-Tabelle anlegen
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS tiles (
+                    zoom INTEGER NOT NULL,
+                    x INTEGER NOT NULL,
+                    y INTEGER NOT NULL,
+                    server VARCHAR(300) NOT NULL,
+                    tile_image BLOB NOT NULL,
+                    CONSTRAINT fk_server FOREIGN KEY (server) REFERENCES server (url),
+                    CONSTRAINT pk_tiles PRIMARY KEY (zoom, x, y, server)
+                )
+            ''')
+            
+            # Standard-Server eintragen, damit der Fremdschlüssel passt
+            cursor.execute('''
+                INSERT OR IGNORE INTO server (url, max_zoom)
+                VALUES ('https://a.tile.openstreetmap.org/{z}/{x}/{y}.png', 19)
+            ''')
+            
+            conn.commit()
+            conn.close()
+            # print("[DB-Setup] SQLite-Schema erfolgreich überprüft/erstellt.") # Optional für dein Log
+        except Exception as e:
+            print(f"⚠️ [DB-Setup] Fehler beim Erstellen der Tabellen: {e}")
+
         # 2. Online-Check
         online_status = False
         try:
@@ -2964,7 +3025,7 @@ class NoFuSTX:
         zoom = int(self.map_widget.zoom)
 
         def download_thread(): # <--- Kartendownload im Hintergrund damit die UI nicht einfriert.
-            from tkintermapview import OfflineLoader
+            
             try:
                 loader = OfflineLoader(path=db_path)
                 
@@ -4682,6 +4743,7 @@ class NoFuSTX:
                     # --- HIER DIE SCHLANKE ANZEIGE ---
                     # Nur noch Name und Zeitstempel in der Listbox anzeigen
                     self.digi_terminals["LORA_MESH"]["node_list"].insert("end", f"{long_name:<20} | {ago} | ID: {hex_id}")
+                    #print(f"[Mesh-MyHeard] Gelesen um {self.utc_time_str()}")
                     
             self.root.after(180000, self.mesh_my_heard) # Alle 3 Minuten aktualisieren
         except Exception as e:
