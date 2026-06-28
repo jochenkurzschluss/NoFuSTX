@@ -1,0 +1,36 @@
+NoFuS-TX Mobile
+Release 1.02.1
+
+Version
+1.02.1+1
+
+APK-Pfad
+APP/nofus_tx_mobile/build/app/outputs/flutter-apk/app-release.apk
+
+Installationshinweis
+1. Die APK auf das Android-Geraet kopieren.
+2. Falls noetig in Android die Installation aus unbekannten Quellen erlauben.
+3. Die Datei app-release.apk oeffnen und installieren.
+4. Beim ersten Start die benoetigten Berechtigungen fuer Bluetooth, Standort und Hintergrundfunktionen bestaetigen.
+
+Neu in Release 1.02.1
+1. IARU-Notmeldungen koennen jetzt via Mesh sauber formatiert versendet werden.
+2. IARU-Meldungen werden automatisch in Teile zerlegt und mit Start-/End-Markern uebertragen.
+3. Herkunft der Meldung ist jetzt als eigenes Feld pflegbar (Ort, Person oder Schiff).
+4. Kanalwahl fuer IARU-Versand ist eingebaut; Direktnachrichten werden dafuer nicht verwendet.
+5. Ultra-sicherer Versandmodus fuer IARU mit laengeren Pausen und mehr Wiederholversuchen ist verfuegbar.
+6. Jede IARU-Meldung hat einen Sendebericht, der im Verlauf per Popup angezeigt werden kann.
+7. IARU-Meldungen koennen alternativ nur lokal gespeichert werden.
+8. Wenn Mesh aktiv ist, aber keine Verbindung besteht, werden automatische Neuverbindungsversuche gestartet; nach drei Fehlversuchen wird der Nutzer informiert.
+9. Normale Mesh-Chats haben jetzt eine Zeichenbegrenzung und ein verbessertes Eingabefeld fuer kleine Displays und System-Navigationsleisten.
+10. Das Kopf-Icon der App wurde auf das App-Symbol umgestellt und mit einem Infofenster erweitert.
+11. Das Infofenster enthaelt Version, Erfinder, Webseite, GitHub, E-Mail und Lizenzhinweis.
+
+Hinweis fuer Tester
+Diese APK ist fuer direkte Tests und Verteilung ausserhalb des Play Stores gedacht.
+Bei Problemen bitte notieren:
+1. Android-Version des Geraets
+2. Geraetemodell
+3. Ob Mesh verbunden war
+4. Welche Funktion getestet wurde
+5. Genaue Fehlermeldung oder beobachtetes Verhalten
